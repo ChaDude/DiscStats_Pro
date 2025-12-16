@@ -1,0 +1,25 @@
+DiscStats-Pro We're coding an ultimate frisbee stats app to act as the modern successor to ultianalytics and ultistats web app. Review the full project for current scope and functionality, then suggest modifications, next steps, etc, so we can keep coding.
+
+I'd like to keep a roadmap available, up to date, and accessable to your context, so we can reference when needed.
+
+Here's the current feature roadmap that I've come up with:
+
+Core MVP Features (Build These First – Reliable, Fast, Offline)
+
+Offline-First Game Tracking (local saves + auto/manual cloud sync later). Point-by-Point Stat Entry (quick buttons for events). Pass-by-Pass Tracking Default: Simple button-based (thrower → receiver → completion/turnover). Optional: Field diagram tapping for locations (toggle per game/setting).
+
+Player Selection & Line Management (rosters, quick select, repeat line, big buttons). Basic Stats Calculation (goals, assists, Ds, turns, +/-, etc.). Game Management (create game, list past games, variable 4v4–7v7 team size). Undo / Edit Past Events (easy undo last action + full point/event editing). Optional Gender Ratio Tracking (ABBA, Offense Dictates, Endzone Dictates; warnings + post-game insights).
+
+Advanced Stats & Insights (Phase 2)
+
+Advanced Analytics (yards, zone %, heatmaps—if field data entered). Visual Dashboards (charts, player profiles).
+
+Team & Multi-Game Features (Phase 3)
+
+Teams & Rosters (multiple teams, persistent rosters). Events/Tournaments (group games, aggregated stats). Cloud Sync & Multi-Device (Firebase for sharing).
+
+Nice-to-Have / Future
+
+Live Scoring Mode. Timer & Pull Direction. Export & Share (CSV/PDF). Customization (themes, custom stats). Monetization (free core, premium for cloud/advanced).
+
+Technical: expo-sqlite early for local DB; big touch-friendly UI; tab navigation.
