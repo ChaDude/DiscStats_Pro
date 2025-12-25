@@ -56,14 +56,29 @@ export default function TeamDetailScreen() {
   );
 
   const renderPlayer = ({ item }: { item: Player }) => {
-    // Show Full Name in Roster List
     const fullName = `${item.firstName} ${item.lastName || ''}`.trim();
 
     return (
       <View style={styles.playerCard}>
         <View style={styles.playerInfo}>
-          <Text style={styles.playerNumber}>{item.number != null ? `#${item.number}` : '--'}</Text>
-          <Text style={styles.playerName}>{fullName}</Text>
+          {/* Fixed: Added numberOfLines and scaling to prevent wrap */}
+          <Text 
+            style={styles.playerNumber}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.7}
+          >
+            {item.number != null ? `#${item.number}` : '--'}
+          </Text>
+          
+          <Text 
+            style={styles.playerName}
+            numberOfLines={1} 
+            adjustsFontSizeToFit 
+            minimumFontScale={0.8}
+          >
+            {fullName}
+          </Text>
         </View>
         <View style={styles.genderBadge}>
           {item.gender === 'male' && <FontAwesome name="male" size={20} color="#3498db" />}
@@ -113,9 +128,9 @@ const styles = StyleSheet.create({
   teamName: { fontSize: 24, fontWeight: 'bold', color: '#2c3e50' },
   subtitle: { fontSize: 16, color: '#7f8c8d', marginTop: 4 },
   playerCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 10, elevation: 1 },
-  playerInfo: { flexDirection: 'row', alignItems: 'center' },
-  playerNumber: { fontSize: 18, fontWeight: 'bold', color: '#95a5a6', width: 50 },
-  playerName: { fontSize: 18, color: '#2c3e50', fontWeight: '500' },
+  playerInfo: { flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 10 },
+  playerNumber: { fontSize: 18, fontWeight: 'bold', color: '#95a5a6', width: 55, marginRight: 8 },
+  playerName: { fontSize: 18, color: '#2c3e50', fontWeight: '500', flex: 1 },
   genderBadge: { width: 30, alignItems: 'center' },
   errorText: { fontSize: 18, color: '#e74c3c', textAlign: 'center', marginTop: 50 },
   fab: { position: 'absolute', width: 56, height: 56, borderRadius: 28, backgroundColor: '#27ae60', justifyContent: 'center', alignItems: 'center', bottom: 30, right: 30, elevation: 8 },

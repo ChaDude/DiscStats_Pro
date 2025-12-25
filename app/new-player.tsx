@@ -26,11 +26,23 @@ export default function NewPlayerScreen() {
   };
 
   const savePlayer = async (addAnother: boolean = false) => {
+    // 1. Name Validation (Required)
     if (!firstName.trim()) {
       Alert.alert('Required', 'First Name is required.');
       return;
     }
 
+    // 2. Name Length Validation (Sarcastic)
+    if (firstName.length > 15 || lastName.length > 15) {
+      Alert.alert(
+        'Woah there, Tolstoy.',
+        `That name is way too long (${Math.max(firstName.length, lastName.length)} chars). Do they have a nickname?`,
+        [{ text: 'Fine, I\'ll shorten it', style: 'cancel' }]
+      );
+      return;
+    }
+
+    // 3. Number Validation
     let finalNumber: number | null = null;
     if (number.trim()) {
       const parsed = Number(number.trim());
