@@ -4,7 +4,6 @@ import { FontAwesome } from '@expo/vector-icons';
 export default function TabLayout() {
   return (
     <Tabs
-      initialRouteName="games"
       screenOptions={{
         tabBarActiveTintColor: '#27ae60',
         headerShown: false,

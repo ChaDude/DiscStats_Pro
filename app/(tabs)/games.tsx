@@ -13,7 +13,6 @@ export default function GamesScreen() {
         Tap the + button to start a new game.
       </Text>
 
-      {/* Floating + Button */}
       <TouchableOpacity
         style={styles.fab}
         onPress={() => router.push('/new-game')}
@@ -52,7 +51,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#27ae60',
     justifyContent: 'center',
     alignItems: 'center',
-    bottom: 90, // Above tab bar
+    bottom: 90,
     right: 20,
     elevation: 8,
     shadowColor: '#000',
