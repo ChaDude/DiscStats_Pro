@@ -1,66 +1,63 @@
 import { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, Alert } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { getDB } from '../../database/db';
 
-type Player = {
+type Team = {
   id: number;
   name: string;
-  number: number | null;
-  gender: string;
 };
 
 export default function TeamsScreen() {
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [name, setName] = useState('');
-  const [number, setNumber] = useState('');
-  const [gender, setGender] = useState('male');
+  const router = useRouter();
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [teamName, setTeamName] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const loadPlayers = async () => {
+  const loadTeams = async () => {
     try {
       const db = await getDB();
-      const result = await db.getAllAsync<Player>('SELECT * FROM players ORDER BY name');
-      setPlayers(result);
+      const result = await db.getAllAsync<Team>('SELECT * FROM teams ORDER BY name');
+      setTeams(result);
     } catch (error) {
       console.error(error);
-      Alert.alert('Error', 'Failed to load players.');
+      Alert.alert('Error', 'Failed to load teams.');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadPlayers();
+    loadTeams();
   }, []);
 
-  const addPlayer = async () => {
-    if (!name.trim()) {
-      Alert.alert('Missing Name', 'Please enter a player name.');
+  const addTeam = async () => {
+    if (!teamName.trim()) {
+      Alert.alert('Missing Name', 'Please enter a team name.');
       return;
     }
 
     try {
       const db = await getDB();
-      await db.runAsync(
-        'INSERT INTO players (name, number, gender) VALUES (?, ?, ?)',
-        [name.trim(), number ? parseInt(number) : null, gender]
-      );
-      setName('');
-      setNumber('');
-      setGender('male');
-      await loadPlayers();
-      Alert.alert('Success', 'Player added!');
-    } catch (error) {
-      console.error(error);
-      Alert.alert('Error', 'Failed to add player.');
+      await db.runAsync('INSERT INTO teams (name) VALUES (?)', [teamName.trim()]);
+      setTeamName('');
+      await loadTeams();
+      Alert.alert('Success', 'Team created!');
+    } catch (error: any) {
+      if (error.message && error.message.includes('UNIQUE constraint failed')) {
+        Alert.alert('Duplicate', 'A team with that name already exists.');
+      } else {
+        console.error(error);
+        Alert.alert('Error', 'Failed to create team.');
+      }
     }
   };
 
-  const deletePlayer = async (id: number) => {
+  const deleteTeam = async (id: number) => {
     Alert.alert(
-      'Delete Player',
-      'Are you sure? This will remove the player from all games.',
+      'Delete Team',
+      'This will delete the team and remove all players from its roster. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -69,10 +66,10 @@ export default function TeamsScreen() {
           onPress: async () => {
             try {
               const db = await getDB();
-              await db.runAsync('DELETE FROM players WHERE id = ?', [id]);
-              await loadPlayers();
+              await db.runAsync('DELETE FROM teams WHERE id = ?', [id]);
+              await loadTeams();
             } catch (error) {
-              Alert.alert('Error', 'Failed to delete player.');
+              Alert.alert('Error', 'Failed to delete team.');
             }
           },
         },
@@ -80,75 +77,49 @@ export default function TeamsScreen() {
     );
   };
 
-  const renderPlayer = ({ item }: { item: Player }) => (
-    <View style={styles.playerCard}>
-      <View style={styles.playerInfo}>
-        <Text style={styles.playerName}>
-          {item.name} {item.number ? `#${item.number}` : ''}
-        </Text>
-        <Text style={styles.playerGender}>{item.gender.toUpperCase()}</Text>
+  const renderTeam = ({ item }: { item: Team }) => (
+    <TouchableOpacity
+      style={styles.teamCard}
+      onPress={() => router.push(`/team/${item.id}`)}
+    >
+      <Text style={styles.teamName}>{item.name}</Text>
+      <View style={styles.teamActions}>
+        <TouchableOpacity onPress={() => deleteTeam(item.id)}>
+          <FontAwesome name="trash" size={24} color="#e74c3c" />
+        </TouchableOpacity>
       </View>
-      <TouchableOpacity onPress={() => deletePlayer(item.id)}>
-        <FontAwesome name="trash" size={24} color="#e74c3c" />
-      </TouchableOpacity>
-    </View>
+    </TouchableOpacity>
   );
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Players</Text>
+      <Text style={styles.title}>My Teams</Text>
 
       <View style={styles.addForm}>
         <TextInput
           style={styles.input}
-          placeholder="Player name"
-          value={name}
-          onChangeText={setName}
+          placeholder="New team name (e.g., Fury)"
+          value={teamName}
+          onChangeText={setTeamName}
+          autoCapitalize="words"
         />
-        <TextInput
-          style={styles.input}
-          placeholder="Number (optional)"
-          value={number}
-          onChangeText={setNumber}
-          keyboardType="numeric"
-        />
-        <View style={styles.genderRow}>
-          <TouchableOpacity
-            style={[styles.genderButton, gender === 'male' && styles.genderSelected]}
-            onPress={() => setGender('male')}
-          >
-            <Text style={styles.genderText}>Male</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.genderButton, gender === 'female' && styles.genderSelected]}
-            onPress={() => setGender('female')}
-          >
-            <Text style={styles.genderText}>Female</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.genderButton, gender === 'other' && styles.genderSelected]}
-            onPress={() => setGender('other')}
-          >
-            <Text style={styles.genderText}>Other</Text>
-          </TouchableOpacity>
-        </View>
-        <TouchableOpacity style={styles.addButton} onPress={addPlayer}>
-          <Text style={styles.addButtonText}>Add Player</Text>
+        <TouchableOpacity style={styles.addButton} onPress={addTeam}>
+          <Text style={styles.addButtonText}>Create Team</Text>
         </TouchableOpacity>
       </View>
 
       {loading ? (
-        <Text style={styles.loadingText}>Loading players...</Text>
-      ) : players.length === 0 ? (
+        <Text style={styles.loadingText}>Loading teams...</Text>
+      ) : teams.length === 0 ? (
         <Text style={styles.emptyText}>
-          No players yet.{'\n\n'}
-          Add players above to use in games.
+          No teams yet.{'\n\n'}
+          Create a team to start building its roster.
         </Text>
       ) : (
         <FlatList
-          data={players}
+          data={teams}
           keyExtractor={(item) => item.id.toString()}
-          renderItem={renderPlayer}
+          renderItem={renderTeam}
           contentContainerStyle={styles.list}
         />
       )}
@@ -181,36 +152,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#f0f0f0',
     borderRadius: 8,
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    marginBottom: 12,
+    paddingVertical: 14,
     fontSize: 18,
-  },
-  genderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-  },
-  genderButton: {
-    flex: 1,
-    paddingVertical: 12,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    alignItems: 'center',
-    marginHorizontal: 4,
-  },
-  genderSelected: {
-    backgroundColor: '#27ae60',
-  },
-  genderText: {
-    fontSize: 16,
-    color: '#2c3e50',
-    fontWeight: '600',
   },
   addButton: {
     backgroundColor: '#27ae60',
     paddingVertical: 16,
     borderRadius: 8,
     alignItems: 'center',
+    marginTop: 16,
   },
   addButtonText: {
     color: '#fff',
@@ -234,27 +184,23 @@ const styles = StyleSheet.create({
   list: {
     paddingHorizontal: 20,
   },
-  playerCard: {
+  teamCard: {
     backgroundColor: '#fff',
-    padding: 16,
+    padding: 20,
     borderRadius: 12,
-    marginBottom: 12,
+    marginBottom: 16,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    elevation: 2,
+    elevation: 3,
   },
-  playerInfo: {
-    flex: 1,
-  },
-  playerName: {
-    fontSize: 20,
+  teamName: {
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#2c3e50',
+    flex: 1,
   },
-  playerGender: {
-    fontSize: 16,
-    color: '#7f8c8d',
-    marginTop: 4,
+  teamActions: {
+    flexDirection: 'row',
   },
 });

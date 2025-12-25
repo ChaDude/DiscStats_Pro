@@ -59,6 +59,22 @@ export const getDB = async () => {
       timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(pointId) REFERENCES points(id) ON DELETE CASCADE
     );
+
+    -- New tables for teams and rosters
+    CREATE TABLE IF NOT EXISTS teams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS team_players (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      teamId INTEGER,
+      playerId INTEGER,
+      FOREIGN KEY(teamId) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY(playerId) REFERENCES players(id) ON DELETE CASCADE,
+      UNIQUE(teamId, playerId)
+    );
   `);
 
   console.log('Database opened and tables created successfully! ✅');
