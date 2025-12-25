@@ -1,40 +1,75 @@
-import { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, ScrollView, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, TextInput } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { TouchableOpacity } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useState, useEffect } from 'react';
 import { getDB } from '../database/db';
+
+type Team = {
+  id: number;
+  name: string;
+};
 
 export default function NewGameScreen() {
   const router = useRouter();
 
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState<number | null>(null);
+  const [opponentName, setOpponentName] = useState('');
   const [teamSize, setTeamSize] = useState(7);
   const [genderRule, setGenderRule] = useState('none');
-  const [teamName, setTeamName] = useState('');
-  const [opponentName, setOpponentName] = useState('');
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const loadTeams = async () => {
+    try {
+      const db = await getDB();
+      const result = await db.getAllAsync<Team>('SELECT * FROM teams ORDER BY name');
+      setTeams(result);
+      if (result.length > 0) {
+        setSelectedTeamId(result[0].id);
+      }
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Error', 'Failed to load teams.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTeams();
+  }, []);
 
   const createGame = async () => {
-    if (!teamName.trim() || !opponentName.trim()) {
-      Alert.alert('Missing Info', 'Please enter both team and opponent names.');
+    if (!selectedTeamId) {
+      Alert.alert('No Team', 'Create a team first in the Teams tab.');
+      return;
+    }
+    if (!opponentName.trim()) {
+      Alert.alert('Missing Opponent', 'Please enter the opponent name.');
       return;
     }
 
     try {
       const db = await getDB();
+      const teamResult = await db.getFirstAsync<{ name: string }>(
+        'SELECT name FROM teams WHERE id = ?',
+        [selectedTeamId]
+      );
 
       await db.runAsync(
-        `INSERT INTO games (name, date, teamName, opponentName, teamSize, genderRule) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO games (name, date, teamName, opponentName, teamSize, genderRule, teamId) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          `${teamName} vs ${opponentName}`,
-          date.toISOString().split('T')[0], // YYYY-MM-DD
-          teamName,
+          `${teamResult?.name || 'My Team'} vs ${opponentName}`,
+          date.toISOString().split('T')[0],
+          teamResult?.name || 'My Team',
           opponentName,
           teamSize,
           genderRule,
+          selectedTeamId,
         ]
       );
 
@@ -42,45 +77,57 @@ export default function NewGameScreen() {
         { text: 'OK', onPress: () => router.back() },
       ]);
     } catch (error) {
-      console.error(error);
-      Alert.alert('Error', 'Failed to create game. Please try again.');
+      console.error('Create game error:', error);
+      Alert.alert('Error', 'Failed to create game. Check console.');
     }
   };
+
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.loading}>Loading teams...</Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>New Game</Text>
 
       <View style={styles.section}>
-        <Text style={styles.label}>Team Name</Text>
-        <TextInput
-          style={styles.input}
-          value={teamName}
-          onChangeText={setTeamName}
-          placeholder="e.g., Fury"
-          autoCorrect={false}
-        />
+        <Text style={styles.label}>My Team</Text>
+        {teams.length === 0 ? (
+          <Text style={styles.noTeams}>
+            No teams yet — go to Teams tab to create one
+          </Text>
+        ) : (
+          <View style={styles.pickerContainer}>
+            <Picker
+              selectedValue={selectedTeamId}
+              onValueChange={(value) => setSelectedTeamId(value as number)}
+            >
+              {teams.map((team) => (
+                <Picker.Item key={team.id} label={team.name} value={team.id} />
+              ))}
+            </Picker>
+          </View>
+        )}
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.label}>Opponent Name</Text>
+        <Text style={styles.label}>Opponent</Text>
         <TextInput
           style={styles.input}
           value={opponentName}
           onChangeText={setOpponentName}
           placeholder="e.g., Riot"
-          autoCorrect={false}
         />
       </View>
 
       <View style={styles.section}>
         <Text style={styles.label}>Team Size</Text>
         <View style={styles.pickerContainer}>
-          <Picker
-            selectedValue={teamSize}
-            onValueChange={(itemValue) => setTeamSize(itemValue)}
-            style={styles.picker}
-          >
+          <Picker selectedValue={teamSize} onValueChange={setTeamSize}>
             <Picker.Item label="4v4" value={4} />
             <Picker.Item label="5v5" value={5} />
             <Picker.Item label="6v6" value={6} />
@@ -92,11 +139,7 @@ export default function NewGameScreen() {
       <View style={styles.section}>
         <Text style={styles.label}>Gender Ratio Rule</Text>
         <View style={styles.pickerContainer}>
-          <Picker
-            selectedValue={genderRule}
-            onValueChange={(itemValue) => setGenderRule(itemValue)}
-            style={styles.picker}
-          >
+          <Picker selectedValue={genderRule} onValueChange={setGenderRule}>
             <Picker.Item label="None (no tracking)" value="none" />
             <Picker.Item label="ABBA (WFDF Rule A)" value="abba" />
             <Picker.Item label="Offense Dictates" value="offense" />
@@ -107,27 +150,18 @@ export default function NewGameScreen() {
 
       <View style={styles.section}>
         <Text style={styles.label}>Date</Text>
-        <TouchableOpacity
-          style={styles.dateButton}
-          onPress={() => setShowDatePicker(true)}
-        >
+        <TouchableOpacity style={styles.dateButton} onPress={() => setShowDatePicker(true)}>
           <Text style={styles.dateText}>
-            {date.toLocaleDateString('en-US', {
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            })}
+            {date.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </Text>
         </TouchableOpacity>
-
         {showDatePicker && (
           <DateTimePicker
             value={date}
             mode="date"
-            display="spinner"
-            onChange={(event, selectedDate) => {
+            onChange={(event, selected) => {
               setShowDatePicker(false);
-              if (selectedDate) setDate(selectedDate);
+              if (selected) setDate(selected);
             }}
           />
         )}
@@ -169,8 +203,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    padding: 16,
     fontSize: 18,
   },
   pickerContainer: {
@@ -180,16 +213,18 @@ const styles = StyleSheet.create({
     borderColor: '#ddd',
     overflow: 'hidden',
   },
-  picker: {
-    height: 200,
+  noTeams: {
+    fontSize: 16,
+    color: '#e74c3c',
+    textAlign: 'center',
+    padding: 20,
   },
   dateButton: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
+    padding: 16,
   },
   dateText: {
     fontSize: 18,
@@ -206,5 +241,11 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 20,
     fontWeight: 'bold',
+  },
+  loading: {
+    fontSize: 18,
+    textAlign: 'center',
+    marginTop: 50,
+    color: '#7f8c8d',
   },
 });

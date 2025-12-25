@@ -8,14 +8,13 @@ type Game = {
   id: number;
   teamName: string;
   opponentName: string;
-  teamSize: number;
+  teamId: number | null;
 };
 
 type Player = {
   id: number;
   name: string;
   number: number | null;
-  gender: string;
 };
 
 type Event = {
@@ -27,11 +26,6 @@ type Event = {
   timestamp: string;
 };
 
-type LinePlayer = {
-  playerId: number;
-  player: Player;
-};
-
 export default function PointTrackingScreen() {
   const { gameId, pointNumber } = useLocalSearchParams<{ gameId: string; pointNumber: string }>();
   const router = useRouter();
@@ -39,25 +33,39 @@ export default function PointTrackingScreen() {
   const [game, setGame] = useState<Game | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
-  const [line, setLine] = useState<LinePlayer[]>([]);
   const [possession, setPossession] = useState<'our' | 'opponent'>('our');
-  const [isOLine, setIsOLine] = useState(true); // true = O line, false = D line
   const [loading, setLoading] = useState(true);
 
   const [modalVisible, setModalVisible] = useState(false);
   const [currentEventType, setCurrentEventType] = useState<string>('');
-  const [selectingRole, setSelectingRole] = useState<'thrower' | 'receiver' | 'defender'>('thrower');
 
   const loadData = async () => {
     try {
       const db = await getDB();
 
-      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [gameId]);
+      // Load game with teamId
+      const gameResult = await db.getFirstAsync<Game>(
+        'SELECT id, teamName, opponentName, teamId FROM games WHERE id = ?',
+        [gameId]
+      );
       setGame(gameResult);
 
-      const playersResult = await db.getAllAsync<Player>('SELECT * FROM players');
-      setPlayers(playersResult);
+      // Load players from the game's team
+      if (gameResult?.teamId) {
+        const playersResult = await db.getAllAsync<Player>(
+          `SELECT p.id, p.name, p.number
+           FROM players p
+           JOIN team_players tp ON p.id = tp.playerId
+           WHERE tp.teamId = ?
+           ORDER BY p.name`,
+          [gameResult.teamId]
+        );
+        setPlayers(playersResult);
+      } else {
+        setPlayers([]);
+      }
 
+      // Load point events
       const pointResult = await db.getFirstAsync<{ id: number }>(
         'SELECT id FROM points WHERE gameId = ? AND pointNumber = ?',
         [gameId, pointNumber]
@@ -72,7 +80,7 @@ export default function PointTrackingScreen() {
       }
     } catch (error) {
       console.error(error);
-      Alert.alert('Error', 'Failed to load data.');
+      Alert.alert('Error', 'Failed to load point.');
     } finally {
       setLoading(false);
     }
@@ -82,7 +90,22 @@ export default function PointTrackingScreen() {
     loadData();
   }, [gameId, pointNumber]);
 
+  const createPointIfNeeded = async () => {
+    const db = await getDB();
+    const pointResult = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+    if (!pointResult) {
+      await db.runAsync(
+        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine) VALUES (?, ?, 0, 0, ?)',
+        [gameId, pointNumber, possession === 'our']
+      );
+    }
+  };
+
   const openPlayerModal = (eventType: string) => {
+    if (players.length === 0) {
+      Alert.alert('No Players', 'Add players to your team roster in the Teams tab.');
+      return;
+    }
     setCurrentEventType(eventType);
     setModalVisible(true);
   };
@@ -100,18 +123,17 @@ export default function PointTrackingScreen() {
 
       if (!pointResult) return;
 
-      // For simplicity, we'll record thrower for pass events, defender for D, etc.
       let throwerId = null;
       let receiverId = null;
       let defenderId = null;
 
-      if (currentEventType === 'goal' || currentEventType === 'drop' || currentEventType === 'turnover') {
+      if (currentEventType === 'goal' || currentEventType === 'turnover' || currentEventType === 'drop') {
         throwerId = playerId;
       } else if (currentEventType === 'd') {
         defenderId = playerId;
       } else if (currentEventType === 'callahan') {
         defenderId = playerId;
-        receiverId = playerId; // Callahan goal by defender
+        receiverId = playerId;
       }
 
       await db.runAsync(
@@ -129,17 +151,6 @@ export default function PointTrackingScreen() {
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to record event.');
-    }
-  };
-
-  const createPointIfNeeded = async () => {
-    const db = await getDB();
-    const pointResult = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
-    if (!pointResult) {
-      await db.runAsync(
-        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine) VALUES (?, ?, 0, 0, ?)',
-        [gameId, pointNumber, possession === 'our']
-      );
     }
   };
 
@@ -187,7 +198,6 @@ export default function PointTrackingScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>Point {pointNumber}</Text>
         <Text style={styles.possession}>{currentPossession} has the disc</Text>
-        <Text style={styles.lineType}>{isOLine ? 'O Line' : 'D Line'}</Text>
       </View>
 
       <View style={styles.buttonGrid}>
@@ -231,20 +241,19 @@ export default function PointTrackingScreen() {
             events.map((event, index) => (
               <Text key={event.id} style={styles.eventItem}>
                 {index + 1}. {event.eventType.toUpperCase()}
-                {event.throwerId ? ` (Thrower: ${players.find(p => p.id === event.throwerId)?.name || 'Unknown'})` : ''}
-                {event.receiverId ? ` (Receiver: ${players.find(p => p.id === event.receiverId)?.name || 'Unknown'})` : ''}
-                {event.defenderId ? ` (Defender: ${players.find(p => p.id === event.defenderId)?.name || 'Unknown'})` : ''}
+                {event.throwerId ? ` (Thrower: ${players.find(p => p.id === event.throwerId)?.name || '???'})` : ''}
+                {event.receiverId ? ` (Receiver: ${players.find(p => p.id === event.receiverId)?.name || '???'})` : ''}
+                {event.defenderId ? ` (Defender: ${players.find(p => p.id === event.defenderId)?.name || '???'})` : ''}
               </Text>
             ))
           )}
         </ScrollView>
       </View>
 
-      {/* Player Selection Modal */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Player for {currentEventType.toUpperCase()}</Text>
+            <Text style={styles.modalTitle}>Select Player - {currentEventType.toUpperCase()}</Text>
             <ScrollView>
               {players.map((player) => (
                 <TouchableOpacity
@@ -290,11 +299,6 @@ const styles = StyleSheet.create({
     color: '#27ae60',
     marginTop: 10,
     fontWeight: '600',
-  },
-  lineType: {
-    fontSize: 18,
-    color: '#34495e',
-    marginTop: 8,
   },
   buttonGrid: {
     flexDirection: 'row',
@@ -360,7 +364,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
   },

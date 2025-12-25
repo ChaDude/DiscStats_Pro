@@ -13,14 +13,16 @@ export const getDB = async () => {
   // Create all tables if they don't exist
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS games (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      date TEXT NOT NULL,
-      teamName TEXT,
-      opponentName TEXT,
-      teamSize INTEGER DEFAULT 7,
-      genderRule TEXT DEFAULT 'none',
-      createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT,
+     date TEXT NOT NULL,
+     teamName TEXT,
+     opponentName TEXT,
+     teamSize INTEGER DEFAULT 7,
+     genderRule TEXT DEFAULT 'none',
+     teamId INTEGER,
+     createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+     FOREIGN KEY(teamId) REFERENCES teams(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS players (
