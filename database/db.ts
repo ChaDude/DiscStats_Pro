@@ -26,9 +26,11 @@ export const getDB = async () => {
       FOREIGN KEY(teamId) REFERENCES teams(id) ON DELETE SET NULL
     );
 
+    -- UPDATED: Split name into firstName and lastName
     CREATE TABLE IF NOT EXISTS players (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
+      firstName TEXT NOT NULL,
+      lastName TEXT,
       number INTEGER,
       gender TEXT DEFAULT 'other',
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP
@@ -64,7 +66,6 @@ export const getDB = async () => {
       FOREIGN KEY(pointId) REFERENCES points(id) ON DELETE CASCADE
     );
 
-    -- New tables for teams and rosters
     CREATE TABLE IF NOT EXISTS teams (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
@@ -94,46 +95,42 @@ const seedDatabase = async (db: SQLite.SQLiteDatabase) => {
     { name: 'Vortex (Mixed)', type: 'mixed' }
   ];
 
-  // Helper to get random number 0-99
   const getNum = () => Math.floor(Math.random() * 100);
 
-  // Common names for generation
   const maleNames = ['James', 'John', 'Robert', 'Michael', 'William', 'David', 'Richard', 'Joseph', 'Thomas', 'Charles', 'Christopher', 'Daniel', 'Matthew', 'Anthony', 'Donald', 'Mark', 'Paul', 'Steven', 'Andrew', 'Kenneth', 'Joshua', 'Kevin', 'Brian', 'George'];
   const femaleNames = ['Mary', 'Patricia', 'Jennifer', 'Linda', 'Elizabeth', 'Barbara', 'Susan', 'Jessica', 'Sarah', 'Karen', 'Nancy', 'Lisa', 'Betty', 'Margaret', 'Sandra', 'Ashley', 'Kimberly', 'Emily', 'Donna', 'Michelle', 'Dorothy', 'Carol', 'Amanda', 'Melissa'];
+  const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Hernandez', 'Lopez', 'Gonzalez', 'Wilson', 'Anderson', 'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin'];
 
   for (const team of teams) {
-    // 1. Create Team
     const result = await db.runAsync('INSERT INTO teams (name) VALUES (?)', [team.name]);
     const teamId = result.lastInsertRowId;
 
-    // 2. Generate 24 Players
     for (let i = 0; i < 24; i++) {
-      let name, gender;
+      let fName, lName, gender;
+      lName = lastNames[i % lastNames.length]; // Cycle last names
 
       if (team.type === 'men') {
-        name = `${maleNames[i % maleNames.length]} ${String.fromCharCode(65 + i)}.` ;
+        fName = maleNames[i % maleNames.length];
         gender = 'male';
       } else if (team.type === 'women') {
-        name = `${femaleNames[i % femaleNames.length]} ${String.fromCharCode(65 + i)}.`;
+        fName = femaleNames[i % femaleNames.length];
         gender = 'female';
       } else {
-        // Mixed: First 12 female, next 12 male
         if (i < 12) {
-          name = `${femaleNames[i]} ${String.fromCharCode(65 + i)}.`;
+          fName = femaleNames[i];
           gender = 'female';
         } else {
-          name = `${maleNames[i - 12]} ${String.fromCharCode(65 + (i - 12))}.`;
+          fName = maleNames[i - 12];
           gender = 'male';
         }
       }
 
-      // Insert Player
+      // Insert Player with Split Names
       const playerResult = await db.runAsync(
-        'INSERT INTO players (name, number, gender) VALUES (?, ?, ?)',
-        [name, getNum(), gender]
+        'INSERT INTO players (firstName, lastName, number, gender) VALUES (?, ?, ?, ?)',
+        [fName, lName, getNum(), gender]
       );
       
-      // Link to Team
       await db.runAsync(
         'INSERT INTO team_players (teamId, playerId) VALUES (?, ?)',
         [teamId, playerResult.lastInsertRowId]
@@ -143,11 +140,8 @@ const seedDatabase = async (db: SQLite.SQLiteDatabase) => {
   console.log('Seeding complete! 🌱');
 };
 
-// We'll call this once on app start
 export const setupDatabase = async () => {
   const db = await getDB();
-  
-  // Check if we need to seed
   const result = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM teams');
   if (result && result.count === 0) {
     await seedDatabase(db);

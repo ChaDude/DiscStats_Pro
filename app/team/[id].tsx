@@ -11,7 +11,8 @@ type Team = {
 
 type Player = {
   id: number;
-  name: string;
+  firstName: string;
+  lastName: string;
   number: number;
   gender: string;
 };
@@ -31,11 +32,11 @@ export default function TeamDetailScreen() {
       setTeam(teamResult);
 
       const rosterResult = await db.getAllAsync<Player>(
-        `SELECT p.id, p.name, p.number, p.gender
+        `SELECT p.id, p.firstName, p.lastName, p.number, p.gender
          FROM players p
          JOIN team_players tp ON p.id = tp.playerId
          WHERE tp.teamId = ?
-         ORDER BY p.name ASC`,
+         ORDER BY p.firstName ASC`,
         [id]
       );
       setPlayers(rosterResult);
@@ -54,19 +55,24 @@ export default function TeamDetailScreen() {
     }, [id])
   );
 
-  const renderPlayer = ({ item }: { item: Player }) => (
-    <View style={styles.playerCard}>
-      <View style={styles.playerInfo}>
-        <Text style={styles.playerNumber}>{item.number ? `#${item.number}` : '--'}</Text>
-        <Text style={styles.playerName}>{item.name}</Text>
+  const renderPlayer = ({ item }: { item: Player }) => {
+    // Show Full Name in Roster List
+    const fullName = `${item.firstName} ${item.lastName || ''}`.trim();
+
+    return (
+      <View style={styles.playerCard}>
+        <View style={styles.playerInfo}>
+          <Text style={styles.playerNumber}>{item.number != null ? `#${item.number}` : '--'}</Text>
+          <Text style={styles.playerName}>{fullName}</Text>
+        </View>
+        <View style={styles.genderBadge}>
+          {item.gender === 'male' && <FontAwesome name="male" size={20} color="#3498db" />}
+          {item.gender === 'female' && <FontAwesome name="female" size={20} color="#e91e63" />}
+          {item.gender === 'other' && <FontAwesome name="user" size={20} color="#95a5a6" />}
+        </View>
       </View>
-      <View style={styles.genderBadge}>
-        {item.gender === 'male' && <FontAwesome name="male" size={20} color="#3498db" />}
-        {item.gender === 'female' && <FontAwesome name="female" size={20} color="#e91e63" />}
-        {item.gender === 'other' && <FontAwesome name="user" size={20} color="#95a5a6" />}
-      </View>
-    </View>
-  );
+    );
+  };
 
   if (loading) return <ActivityIndicator size="large" color="#27ae60" style={{ marginTop: 50 }} />;
   if (!team) return <Text style={styles.errorText}>Team not found.</Text>;
@@ -89,7 +95,6 @@ export default function TeamDetailScreen() {
         }
       />
       
-      {/* UPDATE: FAB now links to new-player with teamId */}
       <TouchableOpacity 
         style={styles.fab}
         onPress={() => router.push(`/new-player?teamId=${team.id}`)}
