@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, Modal } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getDB } from '../../../database/db';
 
 type Game = {
@@ -9,7 +9,6 @@ type Game = {
   teamName: string;
   opponentName: string;
   teamId: number | null;
-  genderRule: string;
   teamSize: number;
 };
 
@@ -35,25 +34,27 @@ export default function PointTrackingScreen() {
 
   const [game, setGame] = useState<Game | null>(null);
   const [roster, setRoster] = useState<Player[]>([]);
-  const [line, setLine] = useState<number[]>([]); // Player IDs on the field
+  const [line, setLine] = useState<number[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [ourScore, setOurScore] = useState(0);
+  const [opponentScore, setOpponentScore] = useState(0);
   const [possession, setPossession] = useState<'our' | 'opponent'>('our');
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
-  const [lineSelectionModalVisible, setLineSelectionModalVisible] = useState(false);
+  const [lineModalVisible, setLineModalVisible] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const scrollRef = useRef<ScrollView>(null);
 
   const loadData = async () => {
     try {
       const db = await getDB();
 
-      // Load game
       const gameResult = await db.getFirstAsync<Game>(
-        'SELECT id, teamName, opponentName, teamId, genderRule FROM games WHERE id = ?',
+        'SELECT id, teamName, opponentName, teamId, teamSize FROM games WHERE id = ?',
         [gameId]
       );
       setGame(gameResult);
 
-      // Load roster
       if (gameResult?.teamId) {
         const playersResult = await db.getAllAsync<Player>(
           `SELECT p.id, p.name, p.number, p.gender
@@ -66,7 +67,6 @@ export default function PointTrackingScreen() {
         setRoster(playersResult);
       }
 
-      // Load point and events
       const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null }>(
         'SELECT id, linePlayers FROM points WHERE gameId = ? AND pointNumber = ?',
         [gameId, pointNumber]
@@ -79,14 +79,19 @@ export default function PointTrackingScreen() {
         );
         setEvents(eventsResult);
 
-        // Load line if set
+        let our = 0;
+        eventsResult.forEach((e) => {
+          if (e.eventType === 'goal') our++;
+        });
+        setOurScore(our);
+
         if (pointResult.linePlayers) {
           setLine(JSON.parse(pointResult.linePlayers));
         } else {
-          setLineSelectionModalVisible(true); // Open line selection if not set
+          setLineModalVisible(true);
         }
       } else {
-        setLineSelectionModalVisible(true); // Open line selection for new point
+        setLineModalVisible(true);
       }
     } catch (error) {
       console.error(error);
@@ -100,19 +105,31 @@ export default function PointTrackingScreen() {
     loadData();
   }, [gameId, pointNumber]);
 
+  useEffect(() => {
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, [events]);
+
+  const createPointIfNeeded = async () => {
+    const db = await getDB();
+    const pointResult = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+    if (!pointResult) {
+      await db.runAsync(
+        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers) VALUES (?, ?, 0, 0, ?, ?)',
+        [gameId, pointNumber, possession === 'our', JSON.stringify(line)]
+      );
+    }
+  };
+
   const saveLine = async (newLine: number[]) => {
     try {
-      const db = await getDB();
-
       await createPointIfNeeded();
-
+      const db = await getDB();
       await db.runAsync(
         'UPDATE points SET linePlayers = ? WHERE gameId = ? AND pointNumber = ?',
         [JSON.stringify(newLine), gameId, pointNumber]
       );
-
       setLine(newLine);
-      setLineSelectionModalVisible(false);
+      setLineModalVisible(false);
     } catch (error) {
       Alert.alert('Error', 'Failed to save line.');
     }
@@ -124,24 +141,18 @@ export default function PointTrackingScreen() {
     } else if (line.length < (game?.teamSize || 7)) {
       setLine([...line, playerId]);
     } else {
-      Alert.alert('Line Full', 'Maximum players on field reached.');
+      Alert.alert('Line Full', `Maximum ${game?.teamSize || 7} players allowed.`);
     }
   };
 
-  const createPointIfNeeded = async () => {
-    const db = await getDB();
-    const pointResult = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
-    if (!pointResult) {
-      await db.runAsync(
-        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine) VALUES (?, ?, 0, 0, ?)',
-        [gameId, pointNumber, possession === 'our']
-      );
+  const recordEvent = async (eventType: string) => {
+    if (!selectedPlayerId) {
+      Alert.alert('Select Player', 'Tap a player button first.');
+      return;
     }
-  };
 
-  const addEvent = async (eventType: string) => {
-    if (selectedPlayerId === null) {
-      Alert.alert('Select Player', 'Please select a player first.');
+    if (!line.includes(selectedPlayerId)) {
+      Alert.alert('Not on Field', 'Selected player is not in the current line.');
       return;
     }
 
@@ -159,17 +170,27 @@ export default function PointTrackingScreen() {
       let receiverId = null;
       let defenderId = null;
 
-      if (eventType === 'throwaway' || eventType === 'drop') {
-        throwerId = selectedPlayerId;
-      } else if (eventType === 'goal') {
-        receiverId = selectedPlayerId;
-      } else if (eventType === 'd') {
-        defenderId = selectedPlayerId;
-      } else if (eventType === 'callahan') {
-        defenderId = selectedPlayerId;
-        receiverId = selectedPlayerId;
-      } else {
-        throwerId = selectedPlayerId; // Default for other events
+      switch (eventType) {
+        case 'goal':
+          receiverId = selectedPlayerId;
+          setOurScore(ourScore + 1);
+          setPossession('opponent');
+          break;
+        case 'throwaway':
+        case 'drop':
+          throwerId = selectedPlayerId;
+          setPossession(possession === 'our' ? 'opponent' : 'our');
+          break;
+        case 'd':
+          defenderId = selectedPlayerId;
+          setPossession(possession === 'our' ? 'opponent' : 'our');
+          break;
+        case 'callahan':
+          defenderId = selectedPlayerId;
+          receiverId = selectedPlayerId;
+          setOurScore(ourScore + 1);
+          setPossession('opponent');
+          break;
       }
 
       await db.runAsync(
@@ -177,13 +198,7 @@ export default function PointTrackingScreen() {
         [pointResult.id, eventType, throwerId, receiverId, defenderId]
       );
 
-      if (eventType === 'throwaway' || eventType === 'drop') {
-        setPossession(possession === 'our' ? 'opponent' : 'our');
-      } else if (eventType === 'goal') {
-        setPossession('opponent');
-      }
-
-      setSelectedPlayerId(null); // Reset selection
+      setSelectedPlayerId(null);
       await loadData();
     } catch (error) {
       console.error(error);
@@ -192,14 +207,11 @@ export default function PointTrackingScreen() {
   };
 
   const undoLastEvent = async () => {
-    if (events.length === 0) {
-      Alert.alert('Nothing to undo', 'No events recorded yet.');
-      return;
-    }
+    if (events.length === 0) return;
 
     Alert.alert(
-      'Undo Last Event',
-      'Remove the last recorded event?',
+      'Undo',
+      'Remove the last event?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -223,7 +235,7 @@ export default function PointTrackingScreen() {
   if (loading || !game) {
     return (
       <View style={styles.container}>
-        <Text style={styles.loading}>Loading point...</Text>
+        <Text style={styles.loading}>Loading...</Text>
       </View>
     );
   }
@@ -232,109 +244,147 @@ export default function PointTrackingScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Point {pointNumber}</Text>
-        <Text style={styles.possession}>{currentPossession} has the disc</Text>
+        <Text style={styles.pointTitle}>Point {pointNumber}</Text>
+        <Text style={styles.scoreText}>
+          {game.teamName} {ourScore} - {opponentScore} {game.opponentName}
+        </Text>
+        <Text style={styles.possessionText}>{currentPossession} has the disc</Text>
       </View>
 
-      <View style={styles.lineSection}>
-        <Text style={styles.sectionTitle}>Players on Field ({line.length}/ {game.teamSize})</Text>
-        <ScrollView horizontal>
-          {line.map((playerId) => {
+      {/* Player Grid */}
+      <View style={styles.lineGridSection}>
+        <View style={styles.lineHeader}>
+          <Text style={styles.lineTitle}>Line ({line.length}/{game.teamSize})</Text>
+          <TouchableOpacity onPress={() => setLineModalVisible(true)}>
+            <FontAwesome name="edit" size={20} color="#27ae60" />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.lineGrid}>
+          {Array.from({ length: 8 }).map((_, index) => {
+            const playerId = line[index];
+            if (!playerId) {
+              return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
+            }
             const player = roster.find(p => p.id === playerId);
-            if (!player) return null;
+            if (!player) return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
             return (
               <TouchableOpacity
                 key={playerId}
                 style={[
-                  styles.playerButton,
-                  selectedPlayerId === playerId && styles.playerButtonSelected,
+                  styles.linePlayerButton,
+                  selectedPlayerId === playerId && styles.linePlayerSelected,
                 ]}
                 onPress={() => setSelectedPlayerId(selectedPlayerId === playerId ? null : playerId)}
               >
-                <Text style={styles.playerButtonText}>{player.name}</Text>
+                <Text style={styles.linePlayerName} numberOfLines={1} adjustsFontSizeToFit>
+                  {player.name}
+                </Text>
+                {player.number && (
+                  <Text style={styles.linePlayerNumber}>#{player.number}</Text>
+                )}
               </TouchableOpacity>
             );
           })}
-        </ScrollView>
-        <TouchableOpacity style={styles.editLineButton} onPress={() => setLineSelectionModalVisible(true)}>
-          <FontAwesome name="edit" size={24} color="#27ae60" />
-          <Text style={styles.editLineText}>Edit Line</Text>
-        </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={styles.buttonGrid}>
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('goal')}>
-          <FontAwesome name="flag-checkered" size={40} color="#fff" />
-          <Text style={styles.buttonText}>Goal</Text>
-        </TouchableOpacity>
+      {/* Event Buttons */}
+      <View style={styles.eventGridSection}>
+        <View style={styles.eventGrid}>
+          <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('goal')}>
+            <FontAwesome name="flag-checkered" size={36} color="#fff" />
+            <Text style={styles.eventText}>Goal</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('throwaway')}>
-          <FontAwesome name="exclamation-triangle" size={40} color="#fff" />
-          <Text style={styles.buttonText}>Throwaway</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('throwaway')}>
+            <FontAwesome name="exclamation-triangle" size={36} color="#fff" />
+            <Text style={styles.eventText}>Throwaway</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('d')}>
-          <FontAwesome name="shield" size={40} color="#fff" />
-          <Text style={styles.buttonText}>D</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('drop')}>
+            <FontAwesome name="arrow-down" size={36} color="#fff" />
+            <Text style={styles.eventText}>Drop</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('drop')}>
-          <FontAwesome name="arrow-down" size={40} color="#fff" />
-          <Text style={styles.buttonText}>Drop</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('d')}>
+            <FontAwesome name="shield" size={36} color="#fff" />
+            <Text style={styles.eventText}>D</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('callahan')}>
-          <FontAwesome name="star" size={40} color="#fff" />
-          <Text style={styles.buttonText}>Callahan</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('callahan')}>
+            <FontAwesome name="star" size={36} color="#fff" />
+            <Text style={styles.eventText}>Callahan</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={styles.undoButton} onPress={undoLastEvent}>
-          <FontAwesome name="undo" size={30} color="#fff" />
-          <Text style={styles.buttonText}>Undo</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={[styles.eventBtn, styles.undoBtn]} onPress={undoLastEvent}>
+            <FontAwesome name="undo" size={36} color="#fff" />
+            <Text style={styles.eventText}>Undo</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={styles.eventsList}>
-        <Text style={styles.eventsTitle}>Events This Point</Text>
-        <ScrollView>
+      {/* Events Log */}
+      <View style={styles.eventsSection}>
+        <Text style={styles.eventsTitle}>Events ({events.length})</Text>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.eventsScroll}
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        >
           {events.length === 0 ? (
-            <Text style={styles.emptyEvents}>No events recorded yet</Text>
+            <Text style={styles.emptyEvents}>No events yet</Text>
           ) : (
-            events.map((event, index) => (
-              <Text key={event.id} style={styles.eventItem}>
-                {index + 1}. {event.eventType.toUpperCase()}
-                {event.throwerId ? ` (Thrower: ${roster.find(p => p.id === event.throwerId)?.name || '???'})` : ''}
-                {event.receiverId ? ` (Receiver: ${roster.find(p => p.id === event.receiverId)?.name || '???'})` : ''}
-                {event.defenderId ? ` (Defender: ${roster.find(p => p.id === event.defenderId)?.name || '???'})` : ''}
-              </Text>
-            ))
+            events.map((event, index) => {
+              const thrower = roster.find(p => p.id === event.throwerId);
+              const receiver = roster.find(p => p.id === event.receiverId);
+              const defender = roster.find(p => p.id === event.defenderId);
+
+              return (
+                <Text key={event.id} style={styles.eventItem}>
+                  {index + 1}. {event.eventType.toUpperCase()}
+                  {thrower ? ` — ${thrower.name}` : ''}
+                  {receiver ? ` → ${receiver.name}` : ''}
+                  {defender ? ` (D by ${defender.name})` : ''}
+                </Text>
+              );
+            })
           )}
         </ScrollView>
       </View>
 
       {/* Line Selection Modal */}
-      <Modal visible={lineSelectionModalVisible} animationType="slide">
+      <Modal visible={lineModalVisible} animationType="slide">
         <View style={styles.modalContainer}>
-          <Text style={styles.modalTitle}>Select Line ({line.length}/ {game.teamSize})</Text>
-          <ScrollView>
+          <Text style={styles.modalTitle}>Select Line ({line.length}/{game.teamSize})</Text>
+          <ScrollView contentContainerStyle={styles.rosterGrid}>
             {roster.map((player) => (
               <TouchableOpacity
                 key={player.id}
                 style={[
-                  styles.playerOption,
-                  line.includes(player.id) && styles.playerOptionSelected,
+                  styles.rosterPlayer,
+                  line.includes(player.id) && styles.rosterPlayerSelected,
                 ]}
                 onPress={() => togglePlayerInLine(player.id)}
               >
-                <Text style={styles.playerName}>
-                  {player.name} {player.number ? `#${player.number}` : ''} ({player.gender.toUpperCase()})
+                <Text style={styles.rosterPlayerName}>
+                  {player.name} {player.number ? `#${player.number}` : ''}
                 </Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
-          <TouchableOpacity style={styles.saveLineButton} onPress={() => saveLine(line)}>
-            <Text style={styles.saveLineText}>Save Line</Text>
+          <TouchableOpacity
+            style={[
+              styles.saveLineBtn,
+              line.length !== game.teamSize && styles.saveLineBtnDisabled,
+            ]}
+            onPress={() => saveLine(line)}
+            disabled={line.length !== game.teamSize}
+          >
+            <Text style={styles.saveLineText}>
+              Save Line ({line.length}/{game.teamSize})
+            </Text>
           </TouchableOpacity>
         </View>
       </Modal>
@@ -348,101 +398,129 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
   },
   header: {
-    padding: 20,
-    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
     backgroundColor: '#fff',
+    alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: '#ddd',
   },
-  title: {
-    fontSize: 28,
+  pointTitle: {
+    fontSize: 24,
     fontWeight: 'bold',
     color: '#2c3e50',
   },
-  possession: {
-    fontSize: 20,
+  scoreText: {
+    fontSize: 26,
+    fontWeight: 'bold',
     color: '#27ae60',
-    marginTop: 10,
-    fontWeight: '600',
+    marginVertical: 6,
   },
-  lineSection: {
-    padding: 20,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-    marginBottom: 10,
-  },
-  playerButton: {
-    backgroundColor: '#fff',
-    padding: 10,
-    borderRadius: 8,
-    marginRight: 10,
-    elevation: 2,
-  },
-  playerButtonSelected: {
-    backgroundColor: '#27ae60',
-  },
-  playerButtonText: {
-    color: '#2c3e50',
-    fontWeight: 'bold',
-  },
-  editLineButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  editLineText: {
+  possessionText: {
     fontSize: 16,
     color: '#27ae60',
-    marginLeft: 8,
+    fontWeight: '600',
   },
-  buttonGrid: {
+  lineGridSection: {
+    flex: 0.38,
+    padding: 15,
+    backgroundColor: '#fff',
+  },
+  lineHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  lineTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2c3e50',
+  },
+  lineGrid: {
+    flex: 1,
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    padding: 20,
+    alignItems: 'center',
   },
-  eventButton: {
+  linePlayerButton: {
+    backgroundColor: '#f0f0f0',
+    width: '23%',
+    aspectRatio: 1,
+    margin: '1%',
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 3,
+  },
+  linePlayerSelected: {
+    backgroundColor: '#27ae60',
+  },
+  linePlayerName: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#2c3e50',
+    textAlign: 'center',
+  },
+  linePlayerNumber: {
+    fontSize: 12,
+    color: '#7f8c8d',
+    marginTop: 4,
+  },
+  linePlayerEmpty: {
+    width: '23%',
+    aspectRatio: 1,
+    margin: '1%',
+  },
+  eventGridSection: {
+    flex: 0.37,
+    justifyContent: 'center',
+    backgroundColor: '#f8f9fa',
+  },
+  eventGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  eventBtn: {
     backgroundColor: '#27ae60',
     width: 100,
     height: 100,
-    borderRadius: 12,
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
-    margin: 10,
+    margin: 8,
     elevation: 5,
   },
-  undoButton: {
+  undoBtn: {
     backgroundColor: '#e74c3c',
-    width: 100,
-    height: 100,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    margin: 10,
-    elevation: 5,
   },
-  buttonText: {
+  eventText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
-    marginTop: 8,
+    marginTop: 6,
     textAlign: 'center',
   },
-  eventsList: {
-    flex: 1,
-    padding: 20,
+  eventsSection: {
+    flex: 0.25,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    backgroundColor: '#fff',
   },
   eventsTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 'bold',
     color: '#2c3e50',
     marginBottom: 10,
   },
+  eventsScroll: {
+    flex: 1,
+  },
   emptyEvents: {
-    fontSize: 18,
+    fontSize: 16,
     color: '#7f8c8d',
     textAlign: 'center',
     marginTop: 20,
@@ -469,26 +547,41 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     color: '#2c3e50',
-    marginBottom: 20,
+    textAlign: 'center',
+    marginVertical: 20,
   },
-  playerOption: {
+  rosterGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  rosterPlayer: {
+    backgroundColor: '#fff',
+    width: '45%',
     padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    margin: 8,
+    borderRadius: 12,
+    alignItems: 'center',
+    elevation: 2,
   },
-  playerOptionSelected: {
+  rosterPlayerSelected: {
     backgroundColor: '#27ae60',
   },
-  playerName: {
+  rosterPlayerName: {
     fontSize: 18,
+    fontWeight: 'bold',
     color: '#2c3e50',
+    textAlign: 'center',
   },
-  saveLineButton: {
+  saveLineBtn: {
     backgroundColor: '#27ae60',
     padding: 16,
-    borderRadius: 8,
+    borderRadius: 12,
     alignItems: 'center',
     marginTop: 20,
+  },
+  saveLineBtnDisabled: {
+    backgroundColor: '#95a5a6',
   },
   saveLineText: {
     color: '#fff',
