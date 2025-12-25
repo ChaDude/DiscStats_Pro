@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useState, useCallback } from 'react';
 import { getDB } from '../../database/db';
@@ -10,8 +10,7 @@ type Game = {
   teamName: string;
   opponentName: string;
   teamSize: number;
-  genderRule: string;
-  date: string;
+  genderRule: string; // 'none', 'abba', 'offense', 'endzone'
 };
 
 type Point = {
@@ -19,28 +18,39 @@ type Point = {
   pointNumber: number;
   ourScoreAfter: number;
   opponentScoreAfter: number;
-  startingOLine: boolean;
+  startingOLine: boolean; // Did we start on O?
+  genderRatio: string | null;
+  eventsCount: number;
 };
 
-export default function LiveGameScreen() {
-  const params = useLocalSearchParams();
-  const id = params.id as string; 
+export default function GameDetailScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
 
   const [game, setGame] = useState<Game | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [loading, setLoading] = useState(true);
+  const [p1Ratio, setP1Ratio] = useState<string | null>(null);
 
-  const loadGame = async () => {
+  const loadData = async () => {
     try {
       const db = await getDB();
-      const gameResult = await db.getFirstAsync('SELECT * FROM games WHERE id = ?', [id]);
-      const pointsResult = await db.getAllAsync(
-        'SELECT * FROM points WHERE gameId = ? ORDER BY pointNumber',
+      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [id]);
+      setGame(gameResult);
+
+      const pointsResult = await db.getAllAsync<Point>(
+        `SELECT p.*, (SELECT COUNT(*) FROM events WHERE pointId = p.id) as eventsCount 
+         FROM points p 
+         WHERE gameId = ? 
+         ORDER BY pointNumber DESC`,
         [id]
       );
-      setGame(gameResult as Game);
-      setPoints(pointsResult as Point[]);
+      setPoints(pointsResult);
+
+      // Get Point 1 ratio for ABBA check
+      const p1 = pointsResult.find(p => p.pointNumber === 1);
+      setP1Ratio(p1?.genderRatio || null);
+
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to load game.');
@@ -49,215 +59,124 @@ export default function LiveGameScreen() {
     }
   };
 
-  // Use useFocusEffect so the list updates when you return from "PointTrackingScreen"
   useFocusEffect(
     useCallback(() => {
-      loadGame();
+      loadData();
     }, [id])
   );
 
-  const currentPoint = points.length + 1;
-  
-  // FIXED SCORE CALCULATION:
-  // Get score from the last completed point. 
-  // If no points yet, score is 0-0.
-  const lastPoint = points.length > 0 ? points[points.length - 1] : null;
-  const ourScore = lastPoint ? lastPoint.ourScoreAfter : 0;
-  const opponentScore = lastPoint ? lastPoint.opponentScoreAfter : 0;
+  const getAbbaStatus = (point: Point) => {
+      if (!game || game.genderRule !== 'abba' || !p1Ratio || !point.genderRatio) return null;
+      
+      const p1M = parseInt(p1Ratio.match(/(\d+)m/)?.[1] || '4');
+      const teamSize = game.teamSize || 7;
+      const isP1MaleHeavy = p1M > (teamSize/2);
 
-  if (loading) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.text}>Loading game...</Text>
-      </View>
-    );
-  }
+      const cycle = Math.floor((point.pointNumber - 2) / 2) % 2; 
+      const isSwap = cycle === 0; // 2,3,6,7 are swaps
 
-  if (!game) {
+      const expectedMaleHeavy = isSwap ? !isP1MaleHeavy : isP1MaleHeavy;
+
+      // Current Point Status
+      const currentM = parseInt(point.genderRatio.match(/(\d+)m/)?.[1] || '0');
+      const currentMaleHeavy = currentM > (teamSize/2);
+
+      if (currentMaleHeavy !== expectedMaleHeavy) {
+          return { mismatch: true, expected: expectedMaleHeavy ? 'Male Heavy' : 'Female Heavy' };
+      }
+      return { mismatch: false };
+  };
+
+  const renderPoint = ({ item }: { item: Point }) => {
+    const abbaStatus = getAbbaStatus(item);
+    
     return (
-      <View style={styles.container}>
-        <Text style={styles.text}>Game not found</Text>
-      </View>
+      <TouchableOpacity 
+        style={styles.pointCard}
+        onPress={() => router.push(`/point/${game!.id}/${item.pointNumber}`)}
+      >
+        <View style={styles.pointHeader}>
+          <Text style={styles.pointTitle}>Point {item.pointNumber}</Text>
+          <View style={[styles.scoreBadge, item.ourScoreAfter > item.opponentScoreAfter ? styles.winning : styles.losing]}>
+            <Text style={styles.scoreText}>
+              {item.ourScoreAfter} - {item.opponentScoreAfter}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.pointDetails}>
+          <Text style={styles.detailText}>
+            Start on {item.startingOLine ? 'Offense' : 'Defense'}
+          </Text>
+          <Text style={styles.detailText}>• {item.eventsCount} Events</Text>
+          
+          {/* Gender Ratio Badge */}
+          {item.genderRatio && (
+              <View style={[styles.ratioBadge, abbaStatus?.mismatch && styles.ratioMismatch]}>
+                  <Text style={[styles.ratioText, abbaStatus?.mismatch && styles.ratioMismatchText]}>
+                      {item.genderRatio}
+                      {abbaStatus?.mismatch && " ⚠️"}
+                  </Text>
+              </View>
+          )}
+        </View>
+      </TouchableOpacity>
     );
-  }
+  };
+
+  if (loading) return <ActivityIndicator size="large" color="#27ae60" style={{marginTop: 50}} />;
+  if (!game) return <Text>Game not found.</Text>;
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.gameTitle}>{game.name}</Text>
-        <Text style={styles.gameDate}>
-          {new Date(game.date + 'T00:00:00').toLocaleDateString('en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-          })}
-        </Text>
-        <Text style={styles.gameInfo}>
-          {game.teamSize}v{game.teamSize} • {game.genderRule !== 'none' ? game.genderRule.toUpperCase() : 'No ratio'}
-        </Text>
-      </View>
-
-      <View style={styles.scoreboard}>
-        <View style={styles.teamScore}>
-          <Text style={styles.teamName}>{game.teamName}</Text>
-          <Text style={styles.score}>{ourScore}</Text>
+        <View style={styles.header}>
+            <Text style={styles.gameTitle}>{game.name}</Text>
+            <Text style={styles.subtitle}>
+                {game.teamName} vs {game.opponentName}
+            </Text>
         </View>
-        <Text style={styles.vs}>vs</Text>
-        <View style={styles.teamScore}>
-          <Text style={styles.teamName}>{game.opponentName}</Text>
-          <Text style={styles.score}>{opponentScore}</Text>
-        </View>
-      </View>
 
-      <View style={styles.currentPoint}>
-        <Text style={styles.pointText}>Point {currentPoint}</Text>
-        <Text style={styles.pointSub}>Ready to start tracking</Text>
-      </View>
-
-      <ScrollView style={styles.pointsList}>
-        {points.length === 0 ? (
-          <Text style={styles.emptyPoints}>No points played yet</Text>
-        ) : (
-          points.map((point) => (
-            <View key={point.id} style={styles.pointItem}>
-              <Text style={styles.pointNumber}>Point {point.pointNumber}</Text>
-              <Text style={styles.pointScore}>
-                {game.teamName} {point.ourScoreAfter} - {point.opponentScoreAfter} {game.opponentName}
-              </Text>
-              <Text style={styles.pointLine}>
-                {point.startingOLine ? `${game.teamName} Started on O` : `${game.teamName} Started on D`}
-              </Text>
-            </View>
-          ))
-        )}
-      </ScrollView>
-
-      <TouchableOpacity
-        style={styles.startPointButton}
-        onPress={() => router.push(`/point/${game.id}/${currentPoint}`)}
-      >
-        <Text style={styles.startPointText}>Start Point {currentPoint}</Text>
-      </TouchableOpacity>
+        <FlatList
+            data={points}
+            keyExtractor={(item) => item.id.toString()}
+            renderItem={renderPoint}
+            contentContainerStyle={styles.list}
+            ListHeaderComponent={
+                <TouchableOpacity 
+                    style={styles.nextPointBtn}
+                    onPress={() => {
+                        const nextPoint = points.length > 0 ? points[0].pointNumber + 1 : 1;
+                        router.push(`/point/${game.id}/${nextPoint}`);
+                    }}
+                >
+                    <Text style={styles.nextPointText}>Start Point {points.length > 0 ? points[0].pointNumber + 1 : 1}</Text>
+                    <FontAwesome name="arrow-right" size={20} color="#fff" />
+                </TouchableOpacity>
+            }
+        />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8f9fa',
-  },
-  header: {
-    padding: 20,
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
-  },
-  gameTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-  },
-  gameDate: {
-    fontSize: 16,
-    color: '#7f8c8d',
-    marginTop: 8,
-  },
-  gameInfo: {
-    fontSize: 16,
-    color: '#34495e',
-    marginTop: 4,
-  },
-  scoreboard: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 30,
-    backgroundColor: '#fff',
-  },
-  teamScore: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  teamName: {
-    fontSize: 20,
-    color: '#2c3e50',
-    marginBottom: 8,
-  },
-  score: {
-    fontSize: 48,
-    fontWeight: 'bold',
-    color: '#27ae60',
-  },
-  vs: {
-    fontSize: 24,
-    color: '#7f8c8d',
-    marginHorizontal: 20,
-  },
-  currentPoint: {
-    alignItems: 'center',
-    padding: 20,
-    backgroundColor: '#fff',
-    marginTop: 10,
-  },
-  pointText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-  },
-  pointSub: {
-    fontSize: 16,
-    color: '#7f8c8d',
-    marginTop: 8,
-  },
-  pointsList: {
-    flex: 1,
-    padding: 20,
-  },
-  emptyPoints: {
-    fontSize: 18,
-    textAlign: 'center',
-    color: '#7f8c8d',
-    marginTop: 50,
-  },
-  pointItem: {
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    elevation: 2,
-  },
-  pointNumber: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-  },
-  pointScore: {
-    fontSize: 18,
-    color: '#27ae60',
-    marginTop: 4,
-  },
-  pointLine: {
-    fontSize: 16,
-    color: '#7f8c8d',
-    marginTop: 4,
-  },
-  startPointButton: {
-    backgroundColor: '#27ae60',
-    margin: 20,
-    paddingVertical: 18,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  startPointText: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  text: {
-    fontSize: 18,
-    textAlign: 'center',
-    color: '#34495e',
-  },
+  container: { flex: 1, backgroundColor: '#f8f9fa' },
+  header: { padding: 20, paddingTop: 60, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#ddd' },
+  gameTitle: { fontSize: 24, fontWeight: 'bold', color: '#2c3e50' },
+  subtitle: { fontSize: 18, color: '#7f8c8d', marginTop: 4 },
+  list: { padding: 20 },
+  nextPointBtn: { backgroundColor: '#27ae60', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 20, elevation: 4 },
+  nextPointText: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginRight: 10 },
+  pointCard: { backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 12, elevation: 2 },
+  pointHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  pointTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50' },
+  scoreBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, backgroundColor: '#95a5a6' },
+  winning: { backgroundColor: '#27ae60' },
+  losing: { backgroundColor: '#e74c3c' },
+  scoreText: { color: '#fff', fontWeight: 'bold' },
+  pointDetails: { flexDirection: 'row', alignItems: 'center' },
+  detailText: { color: '#7f8c8d', marginRight: 10 },
+  ratioBadge: { backgroundColor: '#ecf0f1', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginLeft: 'auto' },
+  ratioText: { fontSize: 12, fontWeight: 'bold', color: '#7f8c8d' },
+  ratioMismatch: { backgroundColor: '#f1c40f' },
+  ratioMismatchText: { color: '#fff' }
 });

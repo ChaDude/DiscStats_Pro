@@ -26,7 +26,6 @@ export const getDB = async () => {
       FOREIGN KEY(teamId) REFERENCES teams(id) ON DELETE SET NULL
     );
 
-    -- UPDATED: Split name into firstName and lastName
     CREATE TABLE IF NOT EXISTS players (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       firstName TEXT NOT NULL,
@@ -52,6 +51,7 @@ export const getDB = async () => {
       opponentScoreAfter INTEGER,
       startingOLine BOOLEAN,
       linePlayers TEXT,
+      genderRatio TEXT, -- Stores 'A' (4m3f) or 'B' (3m4f) etc.
       FOREIGN KEY(gameId) REFERENCES games(id) ON DELETE CASCADE
     );
 
