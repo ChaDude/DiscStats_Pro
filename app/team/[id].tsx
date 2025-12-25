@@ -27,15 +27,9 @@ export default function TeamDetailScreen() {
   const loadData = async () => {
     try {
       const db = await getDB();
-      
-      // 1. Get Team Info
-      const teamResult = await db.getFirstAsync<Team>(
-        'SELECT * FROM teams WHERE id = ?', 
-        [id]
-      );
+      const teamResult = await db.getFirstAsync<Team>('SELECT * FROM teams WHERE id = ?', [id]);
       setTeam(teamResult);
 
-      // 2. Get Roster
       const rosterResult = await db.getAllAsync<Player>(
         `SELECT p.id, p.name, p.number, p.gender
          FROM players p
@@ -63,7 +57,7 @@ export default function TeamDetailScreen() {
   const renderPlayer = ({ item }: { item: Player }) => (
     <View style={styles.playerCard}>
       <View style={styles.playerInfo}>
-        <Text style={styles.playerNumber}>#{item.number}</Text>
+        <Text style={styles.playerNumber}>{item.number ? `#${item.number}` : '--'}</Text>
         <Text style={styles.playerName}>{item.name}</Text>
       </View>
       <View style={styles.genderBadge}>
@@ -74,21 +68,8 @@ export default function TeamDetailScreen() {
     </View>
   );
 
-  if (loading) {
-    return (
-      <View style={styles.container}>
-        <ActivityIndicator size="large" color="#27ae60" style={{ marginTop: 50 }} />
-      </View>
-    );
-  }
-
-  if (!team) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>Team not found.</Text>
-      </View>
-    );
-  }
+  if (loading) return <ActivityIndicator size="large" color="#27ae60" style={{ marginTop: 50 }} />;
+  if (!team) return <Text style={styles.errorText}>Team not found.</Text>;
 
   return (
     <View style={styles.container}>
@@ -108,98 +89,29 @@ export default function TeamDetailScreen() {
         }
       />
       
-      {/* Floating Edit Button (Placeholder for future) */}
+      {/* UPDATE: FAB now links to new-player with teamId */}
       <TouchableOpacity 
         style={styles.fab}
-        onPress={() => Alert.alert('Edit', 'Edit Team/Roster feature coming soon!')}
+        onPress={() => router.push(`/new-player?teamId=${team.id}`)}
       >
-        <FontAwesome name="pencil" size={24} color="#fff" />
+        <FontAwesome name="plus" size={24} color="#fff" />
       </TouchableOpacity>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8f9fa',
-  },
-  list: {
-    padding: 20,
-    paddingBottom: 100,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: 24,
-    paddingVertical: 20,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    elevation: 2,
-  },
-  iconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#eafaf1',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  teamName: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#7f8c8d',
-    marginTop: 4,
-  },
-  playerCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 10,
-    elevation: 1,
-  },
-  playerInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  playerNumber: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#95a5a6',
-    width: 40,
-  },
-  playerName: {
-    fontSize: 18,
-    color: '#2c3e50',
-    fontWeight: '500',
-  },
-  genderBadge: {
-    width: 30,
-    alignItems: 'center',
-  },
-  errorText: {
-    fontSize: 18,
-    color: '#e74c3c',
-    textAlign: 'center',
-    marginTop: 50,
-  },
-  fab: {
-    position: 'absolute',
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#34495e',
-    justifyContent: 'center',
-    alignItems: 'center',
-    bottom: 30,
-    right: 30,
-    elevation: 8,
-  },
+  container: { flex: 1, backgroundColor: '#f8f9fa' },
+  list: { padding: 20, paddingBottom: 100 },
+  header: { alignItems: 'center', marginBottom: 24, paddingVertical: 20, backgroundColor: '#fff', borderRadius: 16, elevation: 2 },
+  iconContainer: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#eafaf1', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  teamName: { fontSize: 24, fontWeight: 'bold', color: '#2c3e50' },
+  subtitle: { fontSize: 16, color: '#7f8c8d', marginTop: 4 },
+  playerCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 10, elevation: 1 },
+  playerInfo: { flexDirection: 'row', alignItems: 'center' },
+  playerNumber: { fontSize: 18, fontWeight: 'bold', color: '#95a5a6', width: 50 },
+  playerName: { fontSize: 18, color: '#2c3e50', fontWeight: '500' },
+  genderBadge: { width: 30, alignItems: 'center' },
+  errorText: { fontSize: 18, color: '#e74c3c', textAlign: 'center', marginTop: 50 },
+  fab: { position: 'absolute', width: 56, height: 56, borderRadius: 28, backgroundColor: '#27ae60', justifyContent: 'center', alignItems: 'center', bottom: 30, right: 30, elevation: 8 },
 });

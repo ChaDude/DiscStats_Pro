@@ -4,37 +4,31 @@ import { setupDatabase } from '../database/db';
 
 export default function RootLayout() {
   useEffect(() => {
-    // Initialize the database (create tables + seed data) when app starts
     setupDatabase();
   }, []);
 
   return (
     <Stack>
-      {/* The Tab Interface (Main App) */}
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       
-      {/* Global Screens */}
       <Stack.Screen 
         name="new-game" 
-        options={{ 
-          presentation: 'modal',
-          title: 'New Game'
-        }} 
+        options={{ presentation: 'modal', title: 'New Game' }} 
       />
       <Stack.Screen 
-        name="game/[id]" 
-        options={{ title: 'Game Tracking' }} 
-      />
-      <Stack.Screen 
-        name="point/[gameId]/[pointNumber]" 
-        options={{ title: 'Track Point' }} 
+        name="new-team" 
+        options={{ presentation: 'modal', title: 'New Team' }} 
       />
       
-      {/* FIXED: Removed parentheses from 'team' */}
+      {/* NEW: Add Player Modal */}
       <Stack.Screen 
-        name="team/[id]" 
-        options={{ title: 'Team Roster' }} 
+        name="new-player" 
+        options={{ presentation: 'modal', title: 'Add Player' }} 
       />
+
+      <Stack.Screen name="game/[id]" options={{ title: 'Game Tracking' }} />
+      <Stack.Screen name="point/[gameId]/[pointNumber]" options={{ title: 'Track Point' }} />
+      <Stack.Screen name="team/[id]" options={{ title: 'Team Roster' }} />
     </Stack>
   );
 }

@@ -68,7 +68,7 @@ export default function TeamsScreen() {
   const renderTeam = ({ item }: { item: TeamSummary }) => (
     <TouchableOpacity 
       style={styles.card}
-      onPress={() => router.push(`/team/${item.id}`)} // We'll build this route next
+      onPress={() => router.push(`/team/${item.id}`)} 
     >
       <View style={styles.cardContent}>
         <View style={styles.cardIcon}>
@@ -115,10 +115,7 @@ export default function TeamsScreen() {
       {/* Floating Add Button */}
       <TouchableOpacity
         style={styles.fab}
-        onPress={() => {
-            // Logic to add a new team manually (can add this route later)
-            Alert.alert("Coming Soon", "Manual team creation is next!");
-        }}
+        onPress={() => router.push('/new-team')} 
       >
         <FontAwesome name="plus" size={30} color="#fff" />
       </TouchableOpacity>
