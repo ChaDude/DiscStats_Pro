@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, Modal } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useState, useEffect } from 'react';
 import { getDB } from '../../../database/db';
@@ -9,17 +9,27 @@ type Game = {
   teamName: string;
   opponentName: string;
   teamSize: number;
-  genderRule: string;
 };
 
-type Point = {
+type Player = {
   id: number;
+  name: string;
+  number: number | null;
+  gender: string;
 };
 
 type Event = {
   id: number;
   eventType: string;
+  throwerId: number | null;
+  receiverId: number | null;
+  defenderId: number | null;
   timestamp: string;
+};
+
+type LinePlayer = {
+  playerId: number;
+  player: Player;
 };
 
 export default function PointTrackingScreen() {
@@ -27,9 +37,16 @@ export default function PointTrackingScreen() {
   const router = useRouter();
 
   const [game, setGame] = useState<Game | null>(null);
+  const [players, setPlayers] = useState<Player[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [line, setLine] = useState<LinePlayer[]>([]);
   const [possession, setPossession] = useState<'our' | 'opponent'>('our');
+  const [isOLine, setIsOLine] = useState(true); // true = O line, false = D line
   const [loading, setLoading] = useState(true);
+
+  const [modalVisible, setModalVisible] = useState(false);
+  const [currentEventType, setCurrentEventType] = useState<string>('');
+  const [selectingRole, setSelectingRole] = useState<'thrower' | 'receiver' | 'defender'>('thrower');
 
   const loadData = async () => {
     try {
@@ -38,7 +55,10 @@ export default function PointTrackingScreen() {
       const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [gameId]);
       setGame(gameResult);
 
-      const pointResult = await db.getFirstAsync<Point>(
+      const playersResult = await db.getAllAsync<Player>('SELECT * FROM players');
+      setPlayers(playersResult);
+
+      const pointResult = await db.getFirstAsync<{ id: number }>(
         'SELECT id FROM points WHERE gameId = ? AND pointNumber = ?',
         [gameId, pointNumber]
       );
@@ -49,19 +69,10 @@ export default function PointTrackingScreen() {
           [pointResult.id]
         );
         setEvents(eventsResult);
-
-        if (eventsResult.length > 0) {
-          const lastEvent = eventsResult[eventsResult.length - 1];
-          if (lastEvent.eventType === 'turnover') {
-            setPossession(possession === 'our' ? 'opponent' : 'our');
-          } else if (lastEvent.eventType === 'goal') {
-            setPossession('opponent');
-          }
-        }
       }
     } catch (error) {
       console.error(error);
-      Alert.alert('Error', 'Failed to load point.');
+      Alert.alert('Error', 'Failed to load data.');
     } finally {
       setLoading(false);
     }
@@ -71,39 +82,46 @@ export default function PointTrackingScreen() {
     loadData();
   }, [gameId, pointNumber]);
 
-  const createPointIfNeeded = async () => {
-    const db = await getDB();
-    const pointResult = await db.getFirstAsync<Point>(
-      'SELECT id FROM points WHERE gameId = ? AND pointNumber = ?',
-      [gameId, pointNumber]
-    );
-    if (!pointResult) {
-      await db.runAsync(
-        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine) VALUES (?, ?, 0, 0, ?)',
-        [gameId, pointNumber, possession === 'our']
-      );
-    }
+  const openPlayerModal = (eventType: string) => {
+    setCurrentEventType(eventType);
+    setModalVisible(true);
   };
 
-  const addEvent = async (eventType: string) => {
+  const selectPlayer = async (playerId: number) => {
+    setModalVisible(false);
+
     try {
       await createPointIfNeeded();
       const db = await getDB();
-      const pointResult = await db.getFirstAsync<Point>(
+      const pointResult = await db.getFirstAsync<{ id: number }>(
         'SELECT id FROM points WHERE gameId = ? AND pointNumber = ?',
         [gameId, pointNumber]
       );
 
       if (!pointResult) return;
 
+      // For simplicity, we'll record thrower for pass events, defender for D, etc.
+      let throwerId = null;
+      let receiverId = null;
+      let defenderId = null;
+
+      if (currentEventType === 'goal' || currentEventType === 'drop' || currentEventType === 'turnover') {
+        throwerId = playerId;
+      } else if (currentEventType === 'd') {
+        defenderId = playerId;
+      } else if (currentEventType === 'callahan') {
+        defenderId = playerId;
+        receiverId = playerId; // Callahan goal by defender
+      }
+
       await db.runAsync(
-        'INSERT INTO events (pointId, eventType, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)',
-        [pointResult.id, eventType]
+        'INSERT INTO events (pointId, eventType, throwerId, receiverId, defenderId, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+        [pointResult.id, currentEventType, throwerId, receiverId, defenderId]
       );
 
-      if (eventType === 'turnover') {
+      if (currentEventType === 'turnover') {
         setPossession(possession === 'our' ? 'opponent' : 'our');
-      } else if (eventType === 'goal') {
+      } else if (currentEventType === 'goal') {
         setPossession('opponent');
       }
 
@@ -111,6 +129,17 @@ export default function PointTrackingScreen() {
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to record event.');
+    }
+  };
+
+  const createPointIfNeeded = async () => {
+    const db = await getDB();
+    const pointResult = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+    if (!pointResult) {
+      await db.runAsync(
+        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine) VALUES (?, ?, 0, 0, ?)',
+        [gameId, pointNumber, possession === 'our']
+      );
     }
   };
 
@@ -135,7 +164,6 @@ export default function PointTrackingScreen() {
               await db.runAsync('DELETE FROM events WHERE id = ?', [lastEvent.id]);
               await loadData();
             } catch (error) {
-              console.error(error);
               Alert.alert('Error', 'Failed to undo.');
             }
           },
@@ -158,33 +186,32 @@ export default function PointTrackingScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Point {pointNumber}</Text>
-        <Text style={styles.possession}>
-          {currentPossession} has the disc
-        </Text>
+        <Text style={styles.possession}>{currentPossession} has the disc</Text>
+        <Text style={styles.lineType}>{isOLine ? 'O Line' : 'D Line'}</Text>
       </View>
 
       <View style={styles.buttonGrid}>
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('goal')}>
+        <TouchableOpacity style={styles.eventButton} onPress={() => openPlayerModal('goal')}>
           <FontAwesome name="flag-checkered" size={40} color="#fff" />
           <Text style={styles.buttonText}>Goal</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('turnover')}>
+        <TouchableOpacity style={styles.eventButton} onPress={() => openPlayerModal('turnover')}>
           <FontAwesome name="exchange" size={40} color="#fff" />
           <Text style={styles.buttonText}>Turnover</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('d')}>
+        <TouchableOpacity style={styles.eventButton} onPress={() => openPlayerModal('d')}>
           <FontAwesome name="shield" size={40} color="#fff" />
           <Text style={styles.buttonText}>D</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('drop')}>
+        <TouchableOpacity style={styles.eventButton} onPress={() => openPlayerModal('drop')}>
           <FontAwesome name="arrow-down" size={40} color="#fff" />
           <Text style={styles.buttonText}>Drop</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.eventButton} onPress={() => addEvent('callahan')}>
+        <TouchableOpacity style={styles.eventButton} onPress={() => openPlayerModal('callahan')}>
           <FontAwesome name="star" size={40} color="#fff" />
           <Text style={styles.buttonText}>Callahan</Text>
         </TouchableOpacity>
@@ -197,19 +224,46 @@ export default function PointTrackingScreen() {
 
       <View style={styles.eventsList}>
         <Text style={styles.eventsTitle}>Events This Point</Text>
-        <ScrollView style={styles.eventsScroll}>
+        <ScrollView>
           {events.length === 0 ? (
             <Text style={styles.emptyEvents}>No events recorded yet</Text>
           ) : (
             events.map((event, index) => (
-              <View key={event.id} style={styles.eventItem}>
-                <Text style={styles.eventNumber}>{index + 1}</Text>
-                <Text style={styles.eventType}>{event.eventType.toUpperCase()}</Text>
-              </View>
+              <Text key={event.id} style={styles.eventItem}>
+                {index + 1}. {event.eventType.toUpperCase()}
+                {event.throwerId ? ` (Thrower: ${players.find(p => p.id === event.throwerId)?.name || 'Unknown'})` : ''}
+                {event.receiverId ? ` (Receiver: ${players.find(p => p.id === event.receiverId)?.name || 'Unknown'})` : ''}
+                {event.defenderId ? ` (Defender: ${players.find(p => p.id === event.defenderId)?.name || 'Unknown'})` : ''}
+              </Text>
             ))
           )}
         </ScrollView>
       </View>
+
+      {/* Player Selection Modal */}
+      <Modal visible={modalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Player for {currentEventType.toUpperCase()}</Text>
+            <ScrollView>
+              {players.map((player) => (
+                <TouchableOpacity
+                  key={player.id}
+                  style={styles.playerOption}
+                  onPress={() => selectPlayer(player.id)}
+                >
+                  <Text style={styles.playerName}>
+                    {player.name} {player.number ? `#${player.number}` : ''}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.modalClose} onPress={() => setModalVisible(false)}>
+              <Text style={styles.modalCloseText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -236,6 +290,11 @@ const styles = StyleSheet.create({
     color: '#27ae60',
     marginTop: 10,
     fontWeight: '600',
+  },
+  lineType: {
+    fontSize: 18,
+    color: '#34495e',
+    marginTop: 8,
   },
   buttonGrid: {
     flexDirection: 'row',
@@ -280,9 +339,6 @@ const styles = StyleSheet.create({
     color: '#2c3e50',
     marginBottom: 10,
   },
-  eventsScroll: {
-    flex: 1,
-  },
   emptyEvents: {
     fontSize: 18,
     color: '#7f8c8d',
@@ -290,28 +346,58 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   eventItem: {
-    flexDirection: 'row',
-    backgroundColor: '#fff',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    elevation: 2,
-  },
-  eventNumber: {
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#27ae60',
-    marginRight: 10,
-  },
-  eventType: {
-    fontSize: 16,
-    color: '#2c3e50',
-    flex: 1,
+    color: '#34495e',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
   },
   loading: {
     fontSize: 18,
     textAlign: 'center',
     marginTop: 50,
     color: '#7f8c8d',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    width: '90%',
+    maxHeight: '80%',
+    borderRadius: 12,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#2c3e50',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  playerOption: {
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  playerName: {
+    fontSize: 18,
+    color: '#34495e',
+    textAlign: 'center',
+  },
+  modalClose: {
+    marginTop: 20,
+    paddingVertical: 12,
+    backgroundColor: '#e74c3c',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalCloseText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
 });
