@@ -1,8 +1,8 @@
+import { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, TextInput } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
-import { useState, useEffect } from 'react';
 import { getDB } from '../database/db';
 
 type Team = {
@@ -18,6 +18,7 @@ export default function NewGameScreen() {
   const [opponentName, setOpponentName] = useState('');
   const [teamSize, setTeamSize] = useState(7);
   const [genderRule, setGenderRule] = useState('none');
+  const [startingPuller, setStartingPuller] = useState<'our' | 'opponent'>('our');
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -60,8 +61,8 @@ export default function NewGameScreen() {
       );
 
       await db.runAsync(
-        `INSERT INTO games (name, date, teamName, opponentName, teamSize, genderRule, teamId) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO games (name, date, teamName, opponentName, teamSize, genderRule, teamId, startingPuller) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           `${teamResult?.name || 'My Team'} vs ${opponentName}`,
           date.toISOString().split('T')[0],
@@ -70,6 +71,7 @@ export default function NewGameScreen() {
           teamSize,
           genderRule,
           selectedTeamId,
+          startingPuller,
         ]
       );
 
@@ -78,7 +80,7 @@ export default function NewGameScreen() {
       ]);
     } catch (error) {
       console.error('Create game error:', error);
-      Alert.alert('Error', 'Failed to create game. Check console.');
+      Alert.alert('Error', 'Failed to create game.');
     }
   };
 
@@ -122,6 +124,16 @@ export default function NewGameScreen() {
           onChangeText={setOpponentName}
           placeholder="e.g., Riot"
         />
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.label}>Who pulls first?</Text>
+        <View style={styles.pickerContainer}>
+          <Picker selectedValue={startingPuller} onValueChange={setStartingPuller}>
+            <Picker.Item label="Our team pulls" value="our" />
+            <Picker.Item label="Opponent pulls" value="opponent" />
+          </Picker>
+        </View>
       </View>
 
       <View style={styles.section}>
@@ -203,7 +215,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 8,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     fontSize: 18,
   },
   pickerContainer: {
@@ -224,7 +237,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 8,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
   },
   dateText: {
     fontSize: 18,
