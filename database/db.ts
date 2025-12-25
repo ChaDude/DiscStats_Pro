@@ -48,6 +48,7 @@ export const getDB = async () => {
       ourScoreAfter INTEGER,
       opponentScoreAfter INTEGER,
       startingOLine BOOLEAN,
+      linePlayers TEXT,
       FOREIGN KEY(gameId) REFERENCES games(id) ON DELETE CASCADE
     );
 
