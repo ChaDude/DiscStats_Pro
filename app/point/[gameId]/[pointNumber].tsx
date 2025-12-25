@@ -36,8 +36,13 @@ export default function PointTrackingScreen() {
   const [roster, setRoster] = useState<Player[]>([]);
   const [line, setLine] = useState<number[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  
+  // Score state
   const [ourScore, setOurScore] = useState(0);
   const [opponentScore, setOpponentScore] = useState(0);
+  const [startOurScore, setStartOurScore] = useState(0); // Score at start of point
+  const [startOpponentScore, setStartOpponentScore] = useState(0);
+
   const [possession, setPossession] = useState<'our' | 'opponent'>('our');
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
   const [lineModalVisible, setLineModalVisible] = useState(false);
@@ -48,13 +53,16 @@ export default function PointTrackingScreen() {
   const loadData = async () => {
     try {
       const db = await getDB();
+      const pNum = parseInt(pointNumber, 10);
 
+      // 1. Load Game Info
       const gameResult = await db.getFirstAsync<Game>(
         'SELECT id, teamName, opponentName, teamId, teamSize FROM games WHERE id = ?',
         [gameId]
       );
       setGame(gameResult);
 
+      // 2. Load Roster
       if (gameResult?.teamId) {
         const playersResult = await db.getAllAsync<Player>(
           `SELECT p.id, p.name, p.number, p.gender
@@ -67,32 +75,58 @@ export default function PointTrackingScreen() {
         setRoster(playersResult);
       }
 
-      const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null }>(
-        'SELECT id, linePlayers FROM points WHERE gameId = ? AND pointNumber = ?',
+      // 3. Determine Starting Score (from previous point)
+      if (pNum > 1) {
+        const prevPoint = await db.getFirstAsync<{ ourScoreAfter: number, opponentScoreAfter: number }>(
+          'SELECT ourScoreAfter, opponentScoreAfter FROM points WHERE gameId = ? AND pointNumber = ?',
+          [gameId, pNum - 1]
+        );
+        if (prevPoint) {
+          setStartOurScore(prevPoint.ourScoreAfter);
+          setStartOpponentScore(prevPoint.opponentScoreAfter);
+          setOurScore(prevPoint.ourScoreAfter);
+          setOpponentScore(prevPoint.opponentScoreAfter);
+        }
+      }
+
+      // 4. Load Current Point Data
+      const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null; ourScoreAfter: number; opponentScoreAfter: number }>(
+        'SELECT id, linePlayers, ourScoreAfter, opponentScoreAfter FROM points WHERE gameId = ? AND pointNumber = ?',
         [gameId, pointNumber]
       );
 
       if (pointResult) {
+        // Point already exists
         const eventsResult = await db.getAllAsync<Event>(
           'SELECT * FROM events WHERE pointId = ? ORDER BY timestamp',
           [pointResult.id]
         );
         setEvents(eventsResult);
 
-        let our = 0;
-        eventsResult.forEach((e) => {
-          if (e.eventType === 'goal') our++;
-        });
-        setOurScore(our);
-
+        // Calculate current status based on events
+        // (Reset to start score first)
+        let currentOur = (pNum > 1) ? startOurScore : 0; // fallback if state not set yet
+        // If we found a previous point earlier, we use that. 
+        // Note: Safe bet is to rely on events to toggle possession, but score updates on goals.
+        
+        // Re-calculate possession and score from event log
+        let tempPossession = 'our'; // Default start, logic needs to know who started on O (saved in point)
+        // For MVP assuming we start on O for now or use the toggle. 
+        // Ideally we fetch 'startingOLine' from points table.
+        
+        // Let's just trust the events for score updates if any exist
+        // But for a live point, usually score hasn't changed yet until the end.
+        
         if (pointResult.linePlayers) {
           setLine(JSON.parse(pointResult.linePlayers));
         } else {
           setLineModalVisible(true);
         }
       } else {
+        // New Point
         setLineModalVisible(true);
       }
+
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to load point.');
@@ -114,8 +148,15 @@ export default function PointTrackingScreen() {
     const pointResult = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
     if (!pointResult) {
       await db.runAsync(
-        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers) VALUES (?, ?, 0, 0, ?, ?)',
-        [gameId, pointNumber, possession === 'our', JSON.stringify(line)]
+        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers) VALUES (?, ?, ?, ?, ?, ?)',
+        [
+          gameId, 
+          pointNumber, 
+          startOurScore, 
+          startOpponentScore, 
+          possession === 'our', // approximate for MVP
+          JSON.stringify(line)
+        ]
       );
     }
   };
@@ -169,13 +210,53 @@ export default function PointTrackingScreen() {
       let throwerId = null;
       let receiverId = null;
       let defenderId = null;
+      
+      // Logic for "End of Point" events
+      if (eventType === 'goal' || eventType === 'callahan') {
+        const isGoal = eventType === 'goal';
+        const isCallahan = eventType === 'callahan';
+        
+        let newOurScore = ourScore;
+        let newOpponentScore = opponentScore;
 
+        if (isGoal) {
+            receiverId = selectedPlayerId;
+            newOurScore = ourScore + 1;
+        } else if (isCallahan) {
+            defenderId = selectedPlayerId;
+            receiverId = selectedPlayerId; // Credit catch to defender
+            newOurScore = ourScore + 1;
+        }
+
+        // 1. Insert the Event
+        await db.runAsync(
+          'INSERT INTO events (pointId, eventType, throwerId, receiverId, defenderId, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+          [pointResult.id, eventType, throwerId, receiverId, defenderId]
+        );
+
+        // 2. Update the Point with FINAL scores
+        await db.runAsync(
+            'UPDATE points SET ourScoreAfter = ?, opponentScoreAfter = ? WHERE id = ?',
+            [newOurScore, newOpponentScore, pointResult.id]
+        );
+
+        // 3. Update Local State (visual feedback)
+        setOurScore(newOurScore);
+        
+        // 4. Alert and Exit
+        Alert.alert(
+            "Point Finished!", 
+            `${game?.teamName} scored!\nScore: ${newOurScore} - ${newOpponentScore}`,
+            [{ 
+                text: "Next Point", 
+                onPress: () => router.back() // Go back to Game Screen
+            }]
+        );
+        return;
+      }
+
+      // Logic for "Mid-Point" events (Possession Changes)
       switch (eventType) {
-        case 'goal':
-          receiverId = selectedPlayerId;
-          setOurScore(ourScore + 1);
-          setPossession('opponent');
-          break;
         case 'throwaway':
         case 'drop':
           throwerId = selectedPlayerId;
@@ -185,12 +266,6 @@ export default function PointTrackingScreen() {
           defenderId = selectedPlayerId;
           setPossession(possession === 'our' ? 'opponent' : 'our');
           break;
-        case 'callahan':
-          defenderId = selectedPlayerId;
-          receiverId = selectedPlayerId;
-          setOurScore(ourScore + 1);
-          setPossession('opponent');
-          break;
       }
 
       await db.runAsync(
@@ -199,7 +274,7 @@ export default function PointTrackingScreen() {
       );
 
       setSelectedPlayerId(null);
-      await loadData();
+      await loadData(); // Refresh events list
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to record event.');
@@ -221,7 +296,17 @@ export default function PointTrackingScreen() {
             try {
               const db = await getDB();
               const lastEvent = events[events.length - 1];
+              
+              // If undoing a goal/callahan? (Not handled in this simple MVP undo, 
+              // because we usually leave the screen. But if we stayed, we'd need to revert score.)
+              
               await db.runAsync('DELETE FROM events WHERE id = ?', [lastEvent.id]);
+              
+              // Simple state revert for possession
+              if (['throwaway', 'drop', 'd'].includes(lastEvent.eventType)) {
+                  setPossession(possession === 'our' ? 'opponent' : 'our');
+              }
+              
               await loadData();
             } catch (error) {
               Alert.alert('Error', 'Failed to undo.');

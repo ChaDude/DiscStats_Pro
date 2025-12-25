@@ -2,6 +2,7 @@
   "expo": {
     "name": "DiscStats-Pro",
     "slug": "DiscStats-Pro",
+    "scheme": "discstatspro",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

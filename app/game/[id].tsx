@@ -1,7 +1,7 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { getDB } from '../../database/db';
 
 type Game = {
@@ -24,7 +24,7 @@ type Point = {
 
 export default function LiveGameScreen() {
   const params = useLocalSearchParams();
-  const id = params.id as string; // Safe cast since it's a dynamic route
+  const id = params.id as string; 
   const router = useRouter();
 
   const [game, setGame] = useState<Game | null>(null);
@@ -49,13 +49,21 @@ export default function LiveGameScreen() {
     }
   };
 
-  useEffect(() => {
-    loadGame();
-  }, [id]);
+  // Use useFocusEffect so the list updates when you return from "PointTrackingScreen"
+  useFocusEffect(
+    useCallback(() => {
+      loadGame();
+    }, [id])
+  );
 
   const currentPoint = points.length + 1;
-  const ourScore = points.reduce((sum, p) => sum + (p.startingOLine ? 1 : 0), 0);
-  const opponentScore = points.length - ourScore;
+  
+  // FIXED SCORE CALCULATION:
+  // Get score from the last completed point. 
+  // If no points yet, score is 0-0.
+  const lastPoint = points.length > 0 ? points[points.length - 1] : null;
+  const ourScore = lastPoint ? lastPoint.ourScoreAfter : 0;
+  const opponentScore = lastPoint ? lastPoint.opponentScoreAfter : 0;
 
   if (loading) {
     return (
@@ -118,7 +126,7 @@ export default function LiveGameScreen() {
                 {game.teamName} {point.ourScoreAfter} - {point.opponentScoreAfter} {game.opponentName}
               </Text>
               <Text style={styles.pointLine}>
-                {point.startingOLine ? `${game.teamName} on O` : `${game.teamName} on D`}
+                {point.startingOLine ? `${game.teamName} Started on O` : `${game.teamName} Started on D`}
               </Text>
             </View>
           ))

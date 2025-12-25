@@ -1,63 +1,51 @@
-import { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, Alert } from 'react-native';
+import { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { FontAwesome } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import { getDB } from '../../database/db';
 
-type Team = {
+type TeamSummary = {
   id: number;
   name: string;
+  playerCount: number;
 };
 
 export default function TeamsScreen() {
   const router = useRouter();
-  const [teams, setTeams] = useState<Team[]>([]);
-  const [teamName, setTeamName] = useState('');
+  const [teams, setTeams] = useState<TeamSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadTeams = async () => {
     try {
       const db = await getDB();
-      const result = await db.getAllAsync<Team>('SELECT * FROM teams ORDER BY name');
+      // We join with team_players to count the roster size for each team
+      const result = await db.getAllAsync<TeamSummary>(`
+        SELECT t.id, t.name, COUNT(tp.playerId) as playerCount
+        FROM teams t
+        LEFT JOIN team_players tp ON t.id = tp.teamId
+        GROUP BY t.id
+        ORDER BY t.name ASC
+      `);
       setTeams(result);
     } catch (error) {
-      console.error(error);
+      console.error('Error loading teams:', error);
       Alert.alert('Error', 'Failed to load teams.');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadTeams();
-  }, []);
+  // Reload list whenever the screen comes into focus (in case we added/deleted teams)
+  useFocusEffect(
+    useCallback(() => {
+      loadTeams();
+    }, [])
+  );
 
-  const addTeam = async () => {
-    if (!teamName.trim()) {
-      Alert.alert('Missing Name', 'Please enter a team name.');
-      return;
-    }
-
-    try {
-      const db = await getDB();
-      await db.runAsync('INSERT INTO teams (name) VALUES (?)', [teamName.trim()]);
-      setTeamName('');
-      await loadTeams();
-      Alert.alert('Success', 'Team created!');
-    } catch (error: any) {
-      if (error.message && error.message.includes('UNIQUE constraint failed')) {
-        Alert.alert('Duplicate', 'A team with that name already exists.');
-      } else {
-        console.error(error);
-        Alert.alert('Error', 'Failed to create team.');
-      }
-    }
-  };
-
-  const deleteTeam = async (id: number) => {
+  const deleteTeam = async (id: number, name: string) => {
     Alert.alert(
       'Delete Team',
-      'This will delete the team and remove all players from its roster. Continue?',
+      `Are you sure you want to delete "${name}"? This will also remove their roster data.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -67,7 +55,7 @@ export default function TeamsScreen() {
             try {
               const db = await getDB();
               await db.runAsync('DELETE FROM teams WHERE id = ?', [id]);
-              await loadTeams();
+              loadTeams(); // Refresh list
             } catch (error) {
               Alert.alert('Error', 'Failed to delete team.');
             }
@@ -77,15 +65,24 @@ export default function TeamsScreen() {
     );
   };
 
-  const renderTeam = ({ item }: { item: Team }) => (
-    <TouchableOpacity
-      style={styles.teamCard}
-      onPress={() => router.push(`/(team)/${item.id}`)}
+  const renderTeam = ({ item }: { item: TeamSummary }) => (
+    <TouchableOpacity 
+      style={styles.card}
+      onPress={() => router.push(`/team/${item.id}`)} // We'll build this route next
     >
-      <Text style={styles.teamName}>{item.name}</Text>
-      <View style={styles.teamActions}>
-        <TouchableOpacity onPress={() => deleteTeam(item.id)}>
-          <FontAwesome name="trash" size={24} color="#e74c3c" />
+      <View style={styles.cardContent}>
+        <View style={styles.cardIcon}>
+          <FontAwesome name="users" size={24} color="#27ae60" />
+        </View>
+        <View style={styles.cardText}>
+          <Text style={styles.teamName}>{item.name}</Text>
+          <Text style={styles.playerCount}>{item.playerCount} Players</Text>
+        </View>
+        <TouchableOpacity 
+          style={styles.deleteBtn}
+          onPress={() => deleteTeam(item.id, item.name)}
+        >
+          <FontAwesome name="trash" size={20} color="#bdc3c7" />
         </TouchableOpacity>
       </View>
     </TouchableOpacity>
@@ -93,36 +90,38 @@ export default function TeamsScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>My Teams</Text>
-
-      <View style={styles.addForm}>
-        <TextInput
-          style={styles.input}
-          placeholder="New team name (e.g., Fury)"
-          value={teamName}
-          onChangeText={setTeamName}
-          autoCapitalize="words"
-        />
-        <TouchableOpacity style={styles.addButton} onPress={addTeam}>
-          <Text style={styles.addButtonText}>Create Team</Text>
-        </TouchableOpacity>
+      <View style={styles.header}>
+        <Text style={styles.title}>Teams</Text>
       </View>
 
       {loading ? (
-        <Text style={styles.loadingText}>Loading teams...</Text>
+        <ActivityIndicator size="large" color="#27ae60" style={{ marginTop: 50 }} />
       ) : teams.length === 0 ? (
-        <Text style={styles.emptyText}>
-          No teams yet.{'\n\n'}
-          Create a team to start building its roster.
-        </Text>
+        <View style={styles.emptyState}>
+          <FontAwesome name="users" size={50} color="#bdc3c7" />
+          <Text style={styles.emptyText}>No teams found.</Text>
+          <Text style={styles.emptySubtext}>Create one or check database seeding.</Text>
+        </View>
       ) : (
         <FlatList
           data={teams}
           keyExtractor={(item) => item.id.toString()}
           renderItem={renderTeam}
           contentContainerStyle={styles.list}
+          showsVerticalScrollIndicator={false}
         />
       )}
+
+      {/* Floating Add Button */}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => {
+            // Logic to add a new team manually (can add this route later)
+            Alert.alert("Coming Soon", "Manual team creation is next!");
+        }}
+      >
+        <FontAwesome name="plus" size={30} color="#fff" />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -132,75 +131,91 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa',
   },
+  header: {
+    paddingTop: 60,
+    paddingBottom: 20,
+    paddingHorizontal: 20,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
   title: {
     fontSize: 32,
     fontWeight: 'bold',
     color: '#2c3e50',
-    textAlign: 'center',
-    marginTop: 20,
-    marginBottom: 20,
-  },
-  addForm: {
-    padding: 20,
-    backgroundColor: '#fff',
-    marginHorizontal: 20,
-    marginBottom: 20,
-    borderRadius: 12,
-    elevation: 3,
-  },
-  input: {
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 18,
-  },
-  addButton: {
-    backgroundColor: '#27ae60',
-    paddingVertical: 16,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  addButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  loadingText: {
-    fontSize: 18,
-    textAlign: 'center',
-    color: '#7f8c8d',
-    marginTop: 50,
-  },
-  emptyText: {
-    fontSize: 18,
-    textAlign: 'center',
-    color: '#7f8c8d',
-    lineHeight: 28,
-    paddingHorizontal: 40,
-    marginTop: 50,
   },
   list: {
-    paddingHorizontal: 20,
-  },
-  teamCard: {
-    backgroundColor: '#fff',
     padding: 20,
+  },
+  card: {
+    backgroundColor: '#fff',
     borderRadius: 12,
     marginBottom: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    elevation: 3,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
-  teamName: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#2c3e50',
+  cardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 20,
+  },
+  cardIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#eafaf1',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  cardText: {
     flex: 1,
   },
-  teamActions: {
-    flexDirection: 'row',
+  teamName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#2c3e50',
+  },
+  playerCount: {
+    fontSize: 14,
+    color: '#7f8c8d',
+    marginTop: 4,
+  },
+  deleteBtn: {
+    padding: 10,
+  },
+  emptyState: {
+    alignItems: 'center',
+    marginTop: 100,
+  },
+  emptyText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#7f8c8d',
+    marginTop: 20,
+  },
+  emptySubtext: {
+    fontSize: 16,
+    color: '#95a5a6',
+    marginTop: 8,
+  },
+  fab: {
+    position: 'absolute',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#27ae60',
+    justifyContent: 'center',
+    alignItems: 'center',
+    bottom: 30,
+    right: 30,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
   },
 });
