@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { FontAwesome } from '@expo/vector-icons';
 import { getDB } from '../../database/db';
 
@@ -22,8 +22,8 @@ export default function GamesScreen() {
   const loadGames = async () => {
     try {
       const db = await getDB();
-      const result = await db.getAllAsync('SELECT * FROM games ORDER BY date DESC');
-      setGames(result as Game[]);
+      const result = await db.getAllAsync<Game>('SELECT * FROM games ORDER BY date DESC');
+      setGames(result);
     } catch (error) {
       console.error('Error loading games:', error);
       Alert.alert('Error', 'Failed to load games.');
@@ -32,9 +32,12 @@ export default function GamesScreen() {
     }
   };
 
-  useEffect(() => {
-    loadGames();
-  }, []);
+  // This is the key fix: Reloads data every time the screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      loadGames();
+    }, [])
+  );
 
   const deleteGame = async (id: number) => {
     Alert.alert(
@@ -49,7 +52,7 @@ export default function GamesScreen() {
             try {
               const db = await getDB();
               await db.runAsync('DELETE FROM games WHERE id = ?', id);
-              await loadGames(); // Refresh list
+              loadGames(); // Refresh list immediately
             } catch (error) {
               Alert.alert('Error', 'Failed to delete game.');
             }
@@ -60,8 +63,6 @@ export default function GamesScreen() {
   };
 
   const renderGame = ({ item }: { item: Game }) => {
-    const currentPoint = 1; // Always start at point 1 for new games
-
     return (
       <TouchableOpacity
         style={styles.gameCard}
@@ -69,7 +70,7 @@ export default function GamesScreen() {
       >
         <View style={styles.gameHeader}>
           <Text style={styles.gameName}>{item.name}</Text>
-          <TouchableOpacity onPress={() => deleteGame(item.id)}>
+          <TouchableOpacity onPress={() => deleteGame(item.id)} hitSlop={10}>
             <FontAwesome name="trash" size={24} color="#e74c3c" />
           </TouchableOpacity>
         </View>
@@ -90,15 +91,20 @@ export default function GamesScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Games</Text>
+      <View style={styles.header}>
+        <Text style={styles.title}>Games</Text>
+      </View>
 
       {loading ? (
-        <Text style={styles.loadingText}>Loading games...</Text>
+        <ActivityIndicator size="large" color="#27ae60" style={{ marginTop: 50 }} />
       ) : games.length === 0 ? (
-        <Text style={styles.emptyText}>
-          No games yet.{'\n\n'}
-          Tap the + button to create your first game.
-        </Text>
+        <View style={styles.emptyState}>
+          <FontAwesome name="trophy" size={50} color="#bdc3c7" />
+          <Text style={styles.emptyText}>
+            No games yet.{'\n\n'}
+            Tap the + button to create your first game.
+          </Text>
+        </View>
       ) : (
         <FlatList
           data={games}
@@ -125,37 +131,40 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa',
   },
+  header: {
+    paddingTop: 60,
+    paddingBottom: 20,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+    alignItems: 'center',
+  },
   title: {
     fontSize: 32,
     fontWeight: 'bold',
     color: '#2c3e50',
-    textAlign: 'center',
-    marginTop: 20,
-    marginBottom: 20,
   },
-  loadingText: {
-    fontSize: 18,
-    textAlign: 'center',
-    color: '#7f8c8d',
-    marginTop: 50,
+  emptyState: {
+    alignItems: 'center',
+    marginTop: 100,
+    paddingHorizontal: 40,
   },
   emptyText: {
     fontSize: 18,
     textAlign: 'center',
     color: '#7f8c8d',
+    marginTop: 20,
     lineHeight: 28,
-    paddingHorizontal: 40,
-    marginTop: 50,
   },
   list: {
-    paddingHorizontal: 20,
+    padding: 20,
   },
   gameCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
-    elevation: 3,
+    elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
@@ -172,6 +181,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#2c3e50',
     flex: 1,
+    marginRight: 10,
   },
   gameDetails: {
     fontSize: 16,
@@ -191,8 +201,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#27ae60',
     justifyContent: 'center',
     alignItems: 'center',
-    bottom: 90,
-    right: 20,
+    bottom: 30,
+    right: 30,
     elevation: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },

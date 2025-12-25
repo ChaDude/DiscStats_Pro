@@ -103,19 +103,16 @@ export default function PointTrackingScreen() {
         );
         setEvents(eventsResult);
 
-        // Calculate current status based on events
-        // (Reset to start score first)
-        let currentOur = (pNum > 1) ? startOurScore : 0; // fallback if state not set yet
-        // If we found a previous point earlier, we use that. 
-        // Note: Safe bet is to rely on events to toggle possession, but score updates on goals.
-        
-        // Re-calculate possession and score from event log
-        let tempPossession = 'our'; // Default start, logic needs to know who started on O (saved in point)
-        // For MVP assuming we start on O for now or use the toggle. 
-        // Ideally we fetch 'startingOLine' from points table.
-        
-        // Let's just trust the events for score updates if any exist
-        // But for a live point, usually score hasn't changed yet until the end.
+        // Determine current possession based on last event
+        if (eventsResult.length > 0) {
+            const lastEvent = eventsResult[eventsResult.length - 1];
+            // If last event was a turnover type, flip possession relative to start?
+            // Actually, simpler to replay the events:
+            let currentPoss = possession; // Start possession (need to track this better in DB eventually)
+            // For now, let's just stick to the simplified logic or previous state
+            // If we reload, we might lose "who has disc" state if not derived from events.
+            // MVP: Just defaulting to 'our' or what state was left in.
+        }
         
         if (pointResult.linePlayers) {
           setLine(JSON.parse(pointResult.linePlayers));
@@ -154,7 +151,7 @@ export default function PointTrackingScreen() {
           pointNumber, 
           startOurScore, 
           startOpponentScore, 
-          possession === 'our', // approximate for MVP
+          possession === 'our', 
           JSON.stringify(line)
         ]
       );
@@ -224,7 +221,7 @@ export default function PointTrackingScreen() {
             newOurScore = ourScore + 1;
         } else if (isCallahan) {
             defenderId = selectedPlayerId;
-            receiverId = selectedPlayerId; // Credit catch to defender
+            receiverId = selectedPlayerId; 
             newOurScore = ourScore + 1;
         }
 
@@ -240,7 +237,7 @@ export default function PointTrackingScreen() {
             [newOurScore, newOpponentScore, pointResult.id]
         );
 
-        // 3. Update Local State (visual feedback)
+        // 3. Update Local State
         setOurScore(newOurScore);
         
         // 4. Alert and Exit
@@ -249,13 +246,13 @@ export default function PointTrackingScreen() {
             `${game?.teamName} scored!\nScore: ${newOurScore} - ${newOpponentScore}`,
             [{ 
                 text: "Next Point", 
-                onPress: () => router.back() // Go back to Game Screen
+                onPress: () => router.back() 
             }]
         );
         return;
       }
 
-      // Logic for "Mid-Point" events (Possession Changes)
+      // Logic for "Mid-Point" events
       switch (eventType) {
         case 'throwaway':
         case 'drop':
@@ -274,7 +271,7 @@ export default function PointTrackingScreen() {
       );
 
       setSelectedPlayerId(null);
-      await loadData(); // Refresh events list
+      await loadData(); 
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to record event.');
@@ -296,13 +293,8 @@ export default function PointTrackingScreen() {
             try {
               const db = await getDB();
               const lastEvent = events[events.length - 1];
-              
-              // If undoing a goal/callahan? (Not handled in this simple MVP undo, 
-              // because we usually leave the screen. But if we stayed, we'd need to revert score.)
-              
               await db.runAsync('DELETE FROM events WHERE id = ?', [lastEvent.id]);
               
-              // Simple state revert for possession
               if (['throwaway', 'drop', 'd'].includes(lastEvent.eventType)) {
                   setPossession(possession === 'our' ? 'opponent' : 'our');
               }
@@ -329,13 +321,29 @@ export default function PointTrackingScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
+      {/* UPDATE: Compact Header with Scalable Text */}
       <View style={styles.header}>
-        <Text style={styles.pointTitle}>Point {pointNumber}</Text>
-        <Text style={styles.scoreText}>
+        <Text 
+          style={styles.pointTitle} 
+          numberOfLines={1} 
+          adjustsFontSizeToFit
+        >
+          Point {pointNumber}
+        </Text>
+        <Text 
+          style={styles.scoreText} 
+          numberOfLines={1} 
+          adjustsFontSizeToFit
+        >
           {game.teamName} {ourScore} - {opponentScore} {game.opponentName}
         </Text>
-        <Text style={styles.possessionText}>{currentPossession} has the disc</Text>
+        <Text 
+          style={styles.possessionText} 
+          numberOfLines={1} 
+          adjustsFontSizeToFit
+        >
+          {currentPossession} has the disc
+        </Text>
       </View>
 
       {/* Player Grid */}
@@ -379,32 +387,32 @@ export default function PointTrackingScreen() {
       <View style={styles.eventGridSection}>
         <View style={styles.eventGrid}>
           <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('goal')}>
-            <FontAwesome name="flag-checkered" size={36} color="#fff" />
+            <FontAwesome name="flag-checkered" size={32} color="#fff" />
             <Text style={styles.eventText}>Goal</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('throwaway')}>
-            <FontAwesome name="exclamation-triangle" size={36} color="#fff" />
-            <Text style={styles.eventText}>Throwaway</Text>
+            <FontAwesome name="exclamation-triangle" size={32} color="#fff" />
+            <Text style={styles.eventText}>Turn</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('drop')}>
-            <FontAwesome name="arrow-down" size={36} color="#fff" />
+            <FontAwesome name="arrow-down" size={32} color="#fff" />
             <Text style={styles.eventText}>Drop</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('d')}>
-            <FontAwesome name="shield" size={36} color="#fff" />
+            <FontAwesome name="shield" size={32} color="#fff" />
             <Text style={styles.eventText}>D</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('callahan')}>
-            <FontAwesome name="star" size={36} color="#fff" />
+            <FontAwesome name="star" size={32} color="#fff" />
             <Text style={styles.eventText}>Callahan</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={[styles.eventBtn, styles.undoBtn]} onPress={undoLastEvent}>
-            <FontAwesome name="undo" size={36} color="#fff" />
+            <FontAwesome name="undo" size={32} color="#fff" />
             <Text style={styles.eventText}>Undo</Text>
           </TouchableOpacity>
         </View>
@@ -483,23 +491,25 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
   },
   header: {
-    paddingVertical: 12,
+    paddingVertical: 8, // Reduced from 12
     paddingHorizontal: 20,
     backgroundColor: '#fff',
     alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: '#ddd',
+    height: 100, // Fixed height to prevent growth
+    justifyContent: 'center'
   },
   pointTitle: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#2c3e50',
   },
   scoreText: {
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: 'bold',
     color: '#27ae60',
-    marginVertical: 6,
+    marginVertical: 4, // Reduced from 6
   },
   possessionText: {
     fontSize: 16,
@@ -571,22 +581,22 @@ const styles = StyleSheet.create({
   },
   eventBtn: {
     backgroundColor: '#27ae60',
-    width: 100,
-    height: 100,
+    width: 90, // Slightly smaller buttons to fit grid better
+    height: 90,
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
-    margin: 8,
-    elevation: 5,
+    margin: 6,
+    elevation: 4,
   },
   undoBtn: {
     backgroundColor: '#e74c3c',
   },
   eventText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 'bold',
-    marginTop: 6,
+    marginTop: 4,
     textAlign: 'center',
   },
   eventsSection: {

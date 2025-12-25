@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, TextInput } from 'react-native';
+import { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, Alert, TouchableOpacity, TextInput, ActivityIndicator } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { getDB } from '../database/db';
 
 type Team = {
@@ -22,13 +22,16 @@ export default function NewGameScreen() {
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   const loadTeams = async () => {
     try {
       const db = await getDB();
       const result = await db.getAllAsync<Team>('SELECT * FROM teams ORDER BY name');
       setTeams(result);
-      if (result.length > 0) {
+      
+      // Auto-select the first team if none selected
+      if (result.length > 0 && !selectedTeamId) {
         setSelectedTeamId(result[0].id);
       }
     } catch (error) {
@@ -39,13 +42,16 @@ export default function NewGameScreen() {
     }
   };
 
-  useEffect(() => {
-    loadTeams();
-  }, []);
+  // Reload teams every time screen opens (in case you just added one)
+  useFocusEffect(
+    useCallback(() => {
+      loadTeams();
+    }, [])
+  );
 
   const createGame = async () => {
     if (!selectedTeamId) {
-      Alert.alert('No Team', 'Create a team first in the Teams tab.');
+      Alert.alert('No Team', 'You need to create a team in the Teams tab first.');
       return;
     }
     if (!opponentName.trim()) {
@@ -53,20 +59,24 @@ export default function NewGameScreen() {
       return;
     }
 
+    setIsSaving(true);
     try {
       const db = await getDB();
+      
+      // Get the team name for the title
       const teamResult = await db.getFirstAsync<{ name: string }>(
         'SELECT name FROM teams WHERE id = ?',
         [selectedTeamId]
       );
+      const myTeamName = teamResult?.name || 'My Team';
 
       await db.runAsync(
         `INSERT INTO games (name, date, teamName, opponentName, teamSize, genderRule, teamId, startingPuller) 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          `${teamResult?.name || 'My Team'} vs ${opponentName}`,
+          `${myTeamName} vs ${opponentName}`,
           date.toISOString().split('T')[0],
-          teamResult?.name || 'My Team',
+          myTeamName,
           opponentName,
           teamSize,
           genderRule,
@@ -75,33 +85,39 @@ export default function NewGameScreen() {
         ]
       );
 
-      Alert.alert('Success', 'New game created!', [
-        { text: 'OK', onPress: () => router.back() },
-      ]);
+      // Success! Go back to games list
+      router.back();
+      
     } catch (error) {
       console.error('Create game error:', error);
       Alert.alert('Error', 'Failed to create game.');
+    } finally {
+      setIsSaving(false);
     }
   };
 
   if (loading) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.loading}>Loading teams...</Text>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#27ae60" />
+        <Text style={styles.loadingText}>Loading teams...</Text>
       </View>
     );
   }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>New Game</Text>
-
+      
+      {/* Team Selection */}
       <View style={styles.section}>
         <Text style={styles.label}>My Team</Text>
         {teams.length === 0 ? (
-          <Text style={styles.noTeams}>
-            No teams yet — go to Teams tab to create one
-          </Text>
+          <TouchableOpacity 
+            style={styles.noTeamsBtn}
+            onPress={() => router.push('/new-team')}
+          >
+            <Text style={styles.noTeamsText}>No teams found. Tap to create one.</Text>
+          </TouchableOpacity>
         ) : (
           <View style={styles.pickerContainer}>
             <Picker
@@ -116,16 +132,18 @@ export default function NewGameScreen() {
         )}
       </View>
 
+      {/* Opponent */}
       <View style={styles.section}>
-        <Text style={styles.label}>Opponent</Text>
+        <Text style={styles.label}>Opponent Name</Text>
         <TextInput
           style={styles.input}
           value={opponentName}
           onChangeText={setOpponentName}
-          placeholder="e.g., Riot"
+          placeholder="e.g. Riot"
         />
       </View>
 
+      {/* Starting Pull */}
       <View style={styles.section}>
         <Text style={styles.label}>Who pulls first?</Text>
         <View style={styles.pickerContainer}>
@@ -136,18 +154,20 @@ export default function NewGameScreen() {
         </View>
       </View>
 
+      {/* Team Size */}
       <View style={styles.section}>
-        <Text style={styles.label}>Team Size</Text>
+        <Text style={styles.label}>Format</Text>
         <View style={styles.pickerContainer}>
           <Picker selectedValue={teamSize} onValueChange={setTeamSize}>
-            <Picker.Item label="4v4" value={4} />
-            <Picker.Item label="5v5" value={5} />
-            <Picker.Item label="6v6" value={6} />
             <Picker.Item label="7v7" value={7} />
+            <Picker.Item label="6v6" value={6} />
+            <Picker.Item label="5v5" value={5} />
+            <Picker.Item label="4v4" value={4} />
           </Picker>
         </View>
       </View>
 
+      {/* Gender Rule */}
       <View style={styles.section}>
         <Text style={styles.label}>Gender Ratio Rule</Text>
         <View style={styles.pickerContainer}>
@@ -160,6 +180,7 @@ export default function NewGameScreen() {
         </View>
       </View>
 
+      {/* Date */}
       <View style={styles.section}>
         <Text style={styles.label}>Date</Text>
         <TouchableOpacity style={styles.dateButton} onPress={() => setShowDatePicker(true)}>
@@ -179,8 +200,17 @@ export default function NewGameScreen() {
         )}
       </View>
 
-      <TouchableOpacity style={styles.createButton} onPress={createGame}>
-        <Text style={styles.createButtonText}>Create Game</Text>
+      {/* Create Button */}
+      <TouchableOpacity 
+        style={[styles.createButton, isSaving && styles.disabled]} 
+        onPress={createGame}
+        disabled={isSaving}
+      >
+        {isSaving ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.createButtonText}>Start Game</Text>
+        )}
       </TouchableOpacity>
     </ScrollView>
   );
@@ -189,29 +219,33 @@ export default function NewGameScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#fff',
   },
   content: {
     padding: 20,
+    paddingBottom: 50,
   },
-  title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-    textAlign: 'center',
-    marginBottom: 30,
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 10,
+    color: '#7f8c8d',
+    fontSize: 16,
   },
   section: {
     marginBottom: 24,
   },
   label: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: 'bold',
     color: '#2c3e50',
     marginBottom: 8,
   },
   input: {
-    backgroundColor: '#fff',
+    backgroundColor: '#f8f9fa',
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 8,
@@ -220,25 +254,31 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   pickerContainer: {
-    backgroundColor: '#fff',
+    backgroundColor: '#f8f9fa',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#ddd',
     overflow: 'hidden',
   },
-  noTeams: {
-    fontSize: 16,
-    color: '#e74c3c',
+  noTeamsBtn: {
+    padding: 16,
+    backgroundColor: '#fff3cd',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ffeeba',
+  },
+  noTeamsText: {
+    color: '#856404',
+    fontWeight: 'bold',
     textAlign: 'center',
-    padding: 20,
   },
   dateButton: {
-    backgroundColor: '#fff',
+    backgroundColor: '#f8f9fa',
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 8,
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingVertical: 14,
   },
   dateText: {
     fontSize: 18,
@@ -246,20 +286,22 @@ const styles = StyleSheet.create({
   },
   createButton: {
     backgroundColor: '#27ae60',
-    paddingVertical: 16,
-    borderRadius: 8,
+    paddingVertical: 18,
+    borderRadius: 12,
     alignItems: 'center',
-    marginTop: 30,
+    marginTop: 10,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  disabled: {
+    backgroundColor: '#95a5a6',
   },
   createButtonText: {
     color: '#fff',
     fontSize: 20,
     fontWeight: 'bold',
-  },
-  loading: {
-    fontSize: 18,
-    textAlign: 'center',
-    marginTop: 50,
-    color: '#7f8c8d',
   },
 });
