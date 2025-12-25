@@ -11,12 +11,6 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen
-        name="index"
-        options={{
-          href: null,  // This hides the index tab completely
-        }}
-      />
-      <Tabs.Screen
         name="games"
         options={{
           title: 'Games',
