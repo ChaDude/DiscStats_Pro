@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, Alert } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useState, useEffect } from 'react';
-import { getDB } from '../../../database/db';
+import { getDB } from '../../database/db';
 
 type Team = {
   id: number;
@@ -25,17 +25,16 @@ export default function TeamDetailScreen() {
   const [playerName, setPlayerName] = useState('');
   const [playerNumber, setPlayerNumber] = useState('');
   const [playerGender, setPlayerGender] = useState<'male' | 'female' | 'other'>('male');
+  const [addMessage, setAddMessage] = useState('');
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
     try {
       const db = await getDB();
 
-      // Load team
       const teamResult = await db.getFirstAsync<Team>('SELECT * FROM teams WHERE id = ?', [id]);
       setTeam(teamResult);
 
-      // Load roster (flat — no nested player object)
       const rosterResult = await db.getAllAsync<Player>(
         `SELECT p.id, p.name, p.number, p.gender
          FROM players p
@@ -66,21 +65,21 @@ export default function TeamDetailScreen() {
     try {
       const db = await getDB();
 
-      // Create player
       const insertResult = await db.runAsync(
         'INSERT INTO players (name, number, gender) VALUES (?, ?, ?)',
         [playerName.trim(), playerNumber ? parseInt(playerNumber) : null, playerGender]
       );
       const playerId = insertResult.lastInsertRowId;
 
-      // Add to team
       await db.runAsync('INSERT INTO team_players (teamId, playerId) VALUES (?, ?)', [id, playerId]);
 
       setPlayerName('');
       setPlayerNumber('');
       setPlayerGender('male');
       await loadData();
-      Alert.alert('Success', 'Player added to roster!');
+
+      setAddMessage('Player added to roster!');
+      setTimeout(() => setAddMessage(''), 2000);
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to add player.');
@@ -136,6 +135,12 @@ export default function TeamDetailScreen() {
     <View style={styles.container}>
       <Text style={styles.title}>{team.name} Roster</Text>
       <Text style={styles.rosterCount}>{roster.length} players</Text>
+
+      {addMessage ? (
+        <View style={styles.successMessage}>
+          <Text style={styles.successText}>{addMessage}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.addForm}>
         <Text style={styles.sectionTitle}>Add New Player</Text>
@@ -209,7 +214,19 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: '#7f8c8d',
     textAlign: 'center',
-    marginBottom: 20,
+    marginBottom: 10,
+  },
+  successMessage: {
+    backgroundColor: '#27ae60',
+    padding: 12,
+    borderRadius: 8,
+    marginHorizontal: 20,
+    marginTop: 10,
+  },
+  successText: {
+    color: '#fff',
+    textAlign: 'center',
+    fontWeight: '600',
   },
   sectionTitle: {
     fontSize: 20,

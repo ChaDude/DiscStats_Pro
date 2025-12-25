@@ -80,7 +80,7 @@ export default function TeamsScreen() {
   const renderTeam = ({ item }: { item: Team }) => (
     <TouchableOpacity
       style={styles.teamCard}
-      onPress={() => router.push(`/team/${item.id}`)}
+      onPress={() => router.push(`/(team)/${item.id}`)}
     >
       <Text style={styles.teamName}>{item.name}</Text>
       <View style={styles.teamActions}>
