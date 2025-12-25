@@ -127,9 +127,7 @@ export default function LiveGameScreen() {
 
       <TouchableOpacity
         style={styles.startPointButton}
-        onPress={() => {
-          Alert.alert('Coming Soon', 'Full point-by-point tracking screen with line management, events, and undo will be built next!');
-        }}
+        onPress={() => router.push(`/point/${game.id}/${currentPoint}`)}
       >
         <Text style={styles.startPointText}>Start Point {currentPoint}</Text>
       </TouchableOpacity>

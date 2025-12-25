@@ -59,30 +59,34 @@ export default function GamesScreen() {
     );
   };
 
-  const renderGame = ({ item }: { item: Game }) => (
-  <TouchableOpacity
-    style={styles.gameCard}
-    onPress={() => router.push(`/game/${item.id}`)}
-  >
-    <View style={styles.gameHeader}>
-      <Text style={styles.gameName}>{item.name}</Text>
-      <TouchableOpacity onPress={() => deleteGame(item.id)}>
-        <FontAwesome name="trash" size={24} color="#e74c3c" />
+  const renderGame = ({ item }: { item: Game }) => {
+    const currentPoint = 1; // Always start at point 1 for new games
+
+    return (
+      <TouchableOpacity
+        style={styles.gameCard}
+        onPress={() => router.push(`/game/${item.id}`)}
+      >
+        <View style={styles.gameHeader}>
+          <Text style={styles.gameName}>{item.name}</Text>
+          <TouchableOpacity onPress={() => deleteGame(item.id)}>
+            <FontAwesome name="trash" size={24} color="#e74c3c" />
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.gameDetails}>
+          {item.teamSize}v{item.teamSize} • {item.genderRule !== 'none' ? item.genderRule.toUpperCase() : 'No ratio tracking'}
+        </Text>
+        <Text style={styles.gameDate}>
+          {new Date(item.date + 'T00:00:00').toLocaleDateString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          })}
+        </Text>
       </TouchableOpacity>
-    </View>
-    <Text style={styles.gameDetails}>
-      {item.teamSize}v{item.teamSize} • {item.genderRule !== 'none' ? item.genderRule.toUpperCase() : 'No ratio tracking'}
-    </Text>
-    <Text style={styles.gameDate}>
-      {new Date(item.date + 'T00:00:00').toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      })}
-    </Text>
-  </TouchableOpacity>
-);
+    );
+  };
 
   return (
     <View style={styles.container}>
