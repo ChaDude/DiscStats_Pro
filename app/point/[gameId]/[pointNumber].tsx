@@ -37,7 +37,7 @@ type LinePlayer = {
 };
 
 // The State Machine
-type GameState = 'awaiting_pull' | 'defense' | 'awaiting_pickup' | 'offense';
+type GameState = 'awaiting_pull' | 'receiving_pull' | 'defense' | 'awaiting_pickup' | 'offense' | 'selecting_scorer' | 'selecting_dropper';
 
 export default function PointTrackingScreen() {
   const { gameId, pointNumber } = useLocalSearchParams<{ gameId: string; pointNumber: string }>();
@@ -59,10 +59,13 @@ export default function PointTrackingScreen() {
   const [pullModalVisible, setPullModalVisible] = useState(false);
   const [pullStep, setPullStep] = useState<'who' | 'outcome'>('who');
   const [pullerId, setPullerId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Metadata State
   const [targetRatio, setTargetRatio] = useState<{m: number, f: number}>({m: 4, f: 3});
   const [ratioLocked, setRatioLocked] = useState(false); 
 
-  // Scores
+  // Score State
   const [ourScore, setOurScore] = useState(0);
   const [opponentScore, setOpponentScore] = useState(0);
   const [startOurScore, setStartOurScore] = useState(0); 
@@ -137,25 +140,35 @@ export default function PointTrackingScreen() {
       let defaultM = Math.ceil(teamSize / 2);
       let defaultF = Math.floor(teamSize / 2);
       let isLocked = false;
+
       if (gameResult?.genderRule === 'abba') {
-         if (pNum === 1) { isLocked = false; } else {
+         if (pNum === 1) {
+             isLocked = false;
+         } else {
              isLocked = true;
              const p1 = await db.getFirstAsync<{ genderRatio: string }>('SELECT genderRatio FROM points WHERE gameId = ? AND pointNumber = 1', [gameId]);
              const p1Str = p1?.genderRatio || `${defaultM}m${defaultF}f`;
              const mMatch = p1Str.match(/(\d+)m/);
              const p1M = mMatch ? parseInt(mMatch[1]) : defaultM;
+             
              const cycle = Math.floor((pNum - 2) / 2) % 2; 
              const isSwap = cycle === 0; 
              const p1MaleHeavy = p1M > (teamSize / 2);
-             if (isSwap) { defaultM = p1MaleHeavy ? Math.floor(teamSize / 2) : Math.ceil(teamSize / 2); defaultF = teamSize - defaultM; } 
-             else { defaultM = p1MaleHeavy ? Math.ceil(teamSize / 2) : Math.floor(teamSize / 2); defaultF = teamSize - defaultM; }
+             
+             if (isSwap) {
+                 defaultM = p1MaleHeavy ? Math.floor(teamSize / 2) : Math.ceil(teamSize / 2);
+                 defaultF = teamSize - defaultM;
+             } else {
+                 defaultM = p1MaleHeavy ? Math.ceil(teamSize / 2) : Math.floor(teamSize / 2);
+                 defaultF = teamSize - defaultM;
+             }
          }
          setTargetRatio({ m: defaultM, f: defaultF });
          setRatioLocked(isLocked);
       }
 
       // Load Point
-      const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null; startingOLine: boolean; genderRatio: string }>(
+      const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null; startingOLine: number; genderRatio: string }>(
         'SELECT * FROM points WHERE gameId = ? AND pointNumber = ?',
         [gameId, pointNumber]
       );
@@ -176,19 +189,24 @@ export default function PointTrackingScreen() {
         if (gameResult?.genderRule === 'abba' && pointResult.genderRatio) {
             const mMatch = pointResult.genderRatio.match(/(\d+)m/);
             const fMatch = pointResult.genderRatio.match(/(\d+)f/);
-            if (mMatch && fMatch) setTargetRatio({ m: parseInt(mMatch[1]), f: parseInt(fMatch[1]) });
+            if (mMatch && fMatch) {
+                setTargetRatio({ m: parseInt(mMatch[1]), f: parseInt(fMatch[1]) });
+            }
         }
 
         // --- Reconstruct Game State from Event Log ---
         if (eventsResult.length === 0) {
-            if (pointResult.startingOLine) setGameState('awaiting_pickup'); 
+            if (pointResult.startingOLine === 1) setGameState('receiving_pull'); 
             else setGameState('awaiting_pull');
         } else {
             let lastState: GameState = 'defense';
             let holder: number | null = null;
 
             eventsResult.forEach(e => {
-                if (e.eventType === 'pull') lastState = 'defense';
+                if (e.eventType === 'pull') {
+                    if (pointResult.startingOLine === 1) lastState = 'awaiting_pickup';
+                    else lastState = 'defense';
+                }
                 else if (e.eventType === 'pull_ob') lastState = 'awaiting_pickup';
                 else if (e.eventType === 'pickup') { lastState = 'offense'; holder = e.throwerId; }
                 else if (e.eventType === 'pass') { lastState = 'offense'; holder = e.receiverId; }
@@ -201,27 +219,29 @@ export default function PointTrackingScreen() {
                 else if (e.eventType === 'goal') { lastState = 'awaiting_pull'; holder = null; }
                 else if (e.eventType === 'callahan') { lastState = 'awaiting_pull'; holder = null; }
                 else if (e.eventType === 'opp_goal') { lastState = 'awaiting_pull'; holder = null; }
+                else if (e.eventType === 'dropped_pull') { lastState = 'defense'; holder = null; }
+                else if (e.eventType === 'thrown_callahan') { lastState = 'awaiting_pull'; holder = null; }
             });
             setGameState(lastState);
             setCurrentHolderId(holder);
         }
 
       } else {
-        // New Point
-        setGameState(weArePulling ? 'awaiting_pull' : 'awaiting_pickup');
+        setGameState(weArePulling ? 'awaiting_pull' : 'receiving_pull');
         setLineModalVisible(true);
       }
 
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to load point.');
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => { loadData(); }, [gameId, pointNumber]);
   useEffect(() => { scrollRef.current?.scrollToEnd({ animated: true }); }, [events]);
 
-  // Trigger Pull Modal if we are pulling
   useEffect(() => {
     if (!lineModalVisible && gameState === 'awaiting_pull' && events.length === 0 && line.length > 0) {
         setPullStep('who');
@@ -229,8 +249,6 @@ export default function PointTrackingScreen() {
     }
   }, [lineModalVisible, gameState, events, line]);
 
-
-  // --- DB Operations ---
   const saveEvent = async (type: string, thrower: number|null, receiver: number|null, defender: number|null) => {
       const db = await getDB();
       const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
@@ -264,16 +282,17 @@ export default function PointTrackingScreen() {
       router.back();
   };
 
-  // --- Interactions ---
+  const recordOpponentPull = async (outcome: 'good' | 'ob') => {
+      const eventType = outcome === 'ob' ? 'pull_ob' : 'pull';
+      await saveEvent(eventType, null, null, null);
+  };
 
   const handleGridTap = (player: Player) => {
       if (gameState === 'offense') {
-          // PASS (Optimistic: Assume catch)
           if (currentHolderId === player.id) return; 
           saveEvent('pass', currentHolderId, player.id, null);
       } 
       else if (gameState === 'defense') {
-          // DEFENSIVE PLAY MENU
           Alert.alert(
               `Defensive Play: ${getDisplayName(player, true)}`,
               'Select action:',
@@ -291,8 +310,7 @@ export default function PointTrackingScreen() {
               ]
           );
       }
-      else if (gameState === 'awaiting_pickup') {
-          // PICKUP
+      else if (gameState === 'awaiting_pickup' || gameState === 'receiving_pull') {
           saveEvent('pickup', player.id, null, null);
       }
   };
@@ -305,7 +323,6 @@ export default function PointTrackingScreen() {
           saveEvent('stall', currentHolderId, null, null);
       }
       else if (action === 'drop') {
-          // CONVERT LAST PASS TO DROP
           const last = events[events.length - 1];
           if (last && last.eventType === 'pass') {
               updateLastEvent('drop');
@@ -313,8 +330,10 @@ export default function PointTrackingScreen() {
               Alert.alert("Error", "Can only record a drop immediately after a pass.");
           }
       }
+      else if (action === 'dropped_pull') {
+          updateLastEvent('dropped_pull');
+      }
       else if (action === 'goal') {
-          // CONVERT LAST PASS TO GOAL
           const last = events[events.length - 1];
           if (last && last.eventType === 'pass') {
               Alert.alert("Goal!", `Confirm goal for ${getDisplayName(roster.find(p=>p.id===last.receiverId), true)}?`, [
@@ -330,6 +349,18 @@ export default function PointTrackingScreen() {
           } else {
               Alert.alert("Error", "Can only record a goal immediately after a pass.");
           }
+      }
+      else if (action === 'thrown_callahan') {
+          Alert.alert("Opponent Callahan", `Confirm thrown callahan by ${getDisplayName(roster.find(p=>p.id===currentHolderId), true)}?`, [
+              { text: "Confirm", onPress: async () => {
+                  await saveEvent('thrown_callahan', currentHolderId, null, null);
+                  const db = await getDB();
+                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+                  if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore, opponentScore+1, pid]);
+                  router.back();
+              }},
+              { text: "Cancel", style: 'cancel' }
+          ]);
       }
       else if (action === 'opp_turn') {
           saveEvent('opp_turn', null, null, null);
@@ -428,21 +459,33 @@ export default function PointTrackingScreen() {
       setTargetRatio({ m: newM, f: newF });
   };
 
-  // Render Vars
   const currentCounts = useMemo(() => getLineCounts(), [line]);
   const isABBA = game?.genderRule === 'abba';
   const isLineFull = line.length === (game?.teamSize || 7);
   const isRatioCorrect = !isABBA || (currentCounts.m === targetRatio.m && currentCounts.f === targetRatio.f);
   const isLineValid = isLineFull && isRatioCorrect;
 
-  // Header Status Logic
   const getHeaderStatus = () => {
       if (gameState === 'defense') return `${game?.opponentName} has the disc`;
       if (gameState === 'offense') return `${game?.teamName} has the disc`;
       if (gameState === 'awaiting_pickup') return 'Disc on Ground';
       if (gameState === 'awaiting_pull') return 'Ready for Pull';
+      if (gameState === 'receiving_pull') return 'Ready to Receive';
       return '...';
   };
+
+  const canDropPull = useMemo(() => {
+      if (gameState !== 'offense') return false;
+      if (events.length === 0) return false;
+      const last = events[events.length - 1];
+      
+      if (last.eventType !== 'pickup') return false;
+
+      if (events.length === 1) return true;
+      const prev = events[events.length - 2];
+      
+      return (prev.eventType === 'pull' || prev.eventType === 'pull_ob');
+  }, [gameState, events]);
 
   return (
     <View style={styles.container}>
@@ -508,9 +551,20 @@ export default function PointTrackingScreen() {
                  <FontAwesome name="exclamation-triangle" size={28} color="#fff" />
                  <Text style={styles.eventText}>Turn</Text>
                </TouchableOpacity>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('drop')}>
-                 <FontAwesome name="arrow-down" size={28} color="#fff" />
-                 <Text style={styles.eventText}>Drop</Text>
+               {canDropPull ? (
+                   <TouchableOpacity style={[styles.eventBtn, {backgroundColor: '#c0392b'}]} onPress={() => handleAction('dropped_pull')}>
+                     <FontAwesome name="times-circle" size={28} color="#fff" />
+                     <Text style={styles.eventText}>Dropped Pull</Text>
+                   </TouchableOpacity>
+               ) : (
+                   <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('drop')}>
+                     <FontAwesome name="arrow-down" size={28} color="#fff" />
+                     <Text style={styles.eventText}>Drop</Text>
+                   </TouchableOpacity>
+               )}
+               <TouchableOpacity style={[styles.eventBtn, {backgroundColor: '#c0392b'}]} onPress={() => handleAction('thrown_callahan')}>
+                    <FontAwesome name="frown-o" size={28} color="#fff" />
+                    <Text style={styles.eventText}>Opp Call.</Text>
                </TouchableOpacity>
                <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('stall')}>
                  <FontAwesome name="hourglass-end" size={28} color="#fff" />
@@ -529,6 +583,18 @@ export default function PointTrackingScreen() {
                  <FontAwesome name="times-circle" size={28} color="#fff" />
                  <Text style={styles.eventText}>Opp Goal</Text>
                </TouchableOpacity>
+             </>
+          )}
+
+          {gameState === 'receiving_pull' && (
+             <>
+                <View style={{width: '100%', alignItems: 'center', marginBottom: 10}}>
+                    <Text style={{color: '#7f8c8d', fontSize: 16}}>Tap player who received/picked up</Text>
+                </View>
+                <TouchableOpacity style={[styles.eventBtn, { backgroundColor: '#e74c3c' }]} onPress={() => recordOpponentPull('ob')}>
+                    <FontAwesome name="ban" size={28} color="#fff" />
+                    <Text style={styles.eventText}>Out of Bounds</Text>
+                </TouchableOpacity>
              </>
           )}
 
@@ -554,11 +620,16 @@ export default function PointTrackingScreen() {
               let desc = event.eventType.toUpperCase();
               if (event.eventType === 'pass') desc = `${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
               if (event.eventType === 'pickup') desc = `Pickup: ${getDisplayName(thrower, false)}`;
+              if (event.eventType === 'pull') desc = thrower ? `Pull: ${getDisplayName(thrower, false)}` : `Opponent Pull (Good)`;
+              if (event.eventType === 'pull_ob') desc = thrower ? `Pull OB: ${getDisplayName(thrower, false)}` : `Opponent Pull (OB)`;
               if (event.eventType === 'goal') desc = `GOAL: ${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
               if (event.eventType === 'throwaway') desc = `Turn: ${getDisplayName(thrower, false)}`;
               if (event.eventType === 'drop') desc = `Drop: ${getDisplayName(receiver, false)} (from ${getDisplayName(thrower, false)})`;
+              if (event.eventType === 'dropped_pull') desc = `Dropped Pull: ${getDisplayName(thrower, false)}`;
               if (event.eventType === 'd') desc = `D: ${getDisplayName(defender, false)}`;
               if (event.eventType === 'interception') desc = `Int: ${getDisplayName(defender, false)}`;
+              if (event.eventType === 'callahan' && defender) desc = `Callahan: ${getDisplayName(defender, false)} (Goal + D)`;
+              if (event.eventType === 'thrown_callahan') desc = `Thrown Callahan (Goal for Opponent)`;
 
               return (
                 <Text key={event.id} style={styles.eventItem}>
@@ -686,6 +757,7 @@ const styles = StyleSheet.create({
   linePlayerButton: { backgroundColor: '#f0f0f0', width: '23%', aspectRatio: 1, margin: '1%', borderRadius: 16, justifyContent: 'center', alignItems: 'center', elevation: 3, position: 'relative' },
   linePlayerSelected: { backgroundColor: '#27ae60' }, // Standard selected
   holderButton: { backgroundColor: '#2ecc71', borderWidth: 2, borderColor: '#27ae60' }, // Highlight holder
+  targetButton: { backgroundColor: '#f1c40f', borderWidth: 2, borderColor: '#f39c12' }, // Highlight potential receivers/scorers
   holderText: { color: '#fff' },
   linePlayerName: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center' },
   linePlayerNumber: { fontSize: 12, color: '#7f8c8d', marginTop: 4 },
