@@ -43,10 +43,13 @@ export default function PointTrackingScreen() {
   const { gameId, pointNumber } = useLocalSearchParams<{ gameId: string; pointNumber: string }>();
   const router = useRouter();
   
-  // Safe parsing
-  const safeGameId = Array.isArray(gameId) ? gameId[0] : gameId;
-  const safePointNumber = Array.isArray(pointNumber) ? pointNumber[0] : pointNumber;
-  const pNum = parseInt(safePointNumber, 10);
+  // Safe parsing & Type Enforcement (Fix for Android NullPointer)
+  const rawGameId = Array.isArray(gameId) ? gameId[0] : gameId;
+  const rawPointNumber = Array.isArray(pointNumber) ? pointNumber[0] : pointNumber;
+  
+  // Convert to Integers for DB consistency
+  const gId = parseInt(rawGameId, 10);
+  const pNum = parseInt(rawPointNumber, 10);
 
   const [game, setGame] = useState<Game | null>(null);
   const [roster, setRoster] = useState<Player[]>([]);
@@ -107,8 +110,10 @@ export default function PointTrackingScreen() {
   // --- Data Loading ---
   const loadData = async () => {
     try {
+      if (isNaN(gId) || isNaN(pNum)) return; // Safety check
+
       const db = await getDB();
-      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [safeGameId]);
+      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [gId]);
       setGame(gameResult);
 
       if (gameResult?.teamId) {
@@ -130,14 +135,14 @@ export default function PointTrackingScreen() {
       } else {
         const prevPoint = await db.getFirstAsync<{ ourScoreAfter: number, opponentScoreAfter: number }>(
           'SELECT ourScoreAfter, opponentScoreAfter FROM points WHERE gameId = ? AND pointNumber = ?',
-          [safeGameId, pNum - 1]
+          [gId, pNum - 1]
         );
         if (prevPoint) {
             initialOurScore = prevPoint.ourScoreAfter;
             initialOpponentScore = prevPoint.opponentScoreAfter;
             const lastEvent = await db.getFirstAsync<{ eventType: string }>(
                 'SELECT eventType FROM events WHERE pointId = (SELECT id FROM points WHERE gameId=? AND pointNumber=?) ORDER BY id DESC LIMIT 1',
-                [safeGameId, pNum - 1]
+                [gId, pNum - 1]
             );
             weArePulling = (lastEvent?.eventType === 'goal' || lastEvent?.eventType === 'callahan');
         }
@@ -148,7 +153,7 @@ export default function PointTrackingScreen() {
       setOpponentScore(initialOpponentScore);
       setStartingOnOffense(!weArePulling);
 
-      // --- ABBA Logic (Fixed: A, B, B, A, A, B, B...) ---
+      // --- ABBA Logic (A-A-B-B Pattern) ---
       const teamSize = gameResult?.teamSize || 7;
       let defaultM = Math.ceil(teamSize / 2);
       let defaultF = Math.floor(teamSize / 2);
@@ -159,15 +164,12 @@ export default function PointTrackingScreen() {
              isLocked = false;
          } else {
              isLocked = true;
-             const p1 = await db.getFirstAsync<{ genderRatio: string }>('SELECT genderRatio FROM points WHERE gameId = ? AND pointNumber = 1', [safeGameId]);
+             const p1 = await db.getFirstAsync<{ genderRatio: string }>('SELECT genderRatio FROM points WHERE gameId = ? AND pointNumber = 1', [gId]);
              const p1Str = p1?.genderRatio || `${defaultM}m${defaultF}f`;
              const mMatch = p1Str.match(/(\d+)m/);
              const p1M = mMatch ? parseInt(mMatch[1]) : defaultM;
              
-             // P2 & P3 = Swap. P4 & P5 = Same.
-             // (2-2)/2 = 0 (Swap)
-             // (3-2)/2 = 0 (Swap)
-             // (4-2)/2 = 1 (Same)
+             // Fixed A-A-B-B Logic:
              const cycle = Math.floor((pNum - 2) / 2) % 2; 
              const isSwap = cycle === 0; 
              
@@ -188,7 +190,7 @@ export default function PointTrackingScreen() {
       // Load Point
       const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null; startingOLine: number; genderRatio: string }>(
         'SELECT * FROM points WHERE gameId = ? AND pointNumber = ?',
-        [safeGameId, safePointNumber]
+        [gId, pNum]
       );
 
       if (pointResult) {
@@ -204,7 +206,7 @@ export default function PointTrackingScreen() {
           }
         }
         
-        // Use saved ratio as target (this preserves target even if lineup drifts due to subs)
+        // Use saved ratio as target (preserves target even if line drifts)
         if (gameResult?.genderRule === 'abba' && pointResult.genderRatio) {
             const mMatch = pointResult.genderRatio.match(/(\d+)m/);
             const fMatch = pointResult.genderRatio.match(/(\d+)f/);
@@ -277,7 +279,7 @@ export default function PointTrackingScreen() {
 
   const saveEvent = async (type: string, thrower: number|null, receiver: number|null, defender: number|null) => {
       const db = await getDB();
-      const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
+      const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gId, pNum]);
       if (!pointRow) return;
 
       const t = (thrower ?? null) as number | null;
@@ -303,7 +305,7 @@ export default function PointTrackingScreen() {
   const recordCallahan = async (playerId: number) => {
       await saveEvent('callahan', null, null, playerId);
       const db = await getDB();
-      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
+      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gId, pNum]))?.id;
       if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore+1, opponentScore, pid]);
       router.back();
   };
@@ -313,6 +315,7 @@ export default function PointTrackingScreen() {
       await saveEvent(eventType, null, null, null);
   };
 
+  // --- Injury Sub Logic ---
   const handleInjurySubStart = () => {
       setSubStep('out');
       setSubPlayerOut(null);
@@ -332,19 +335,18 @@ export default function PointTrackingScreen() {
           newLine.push({ id: playerIn.id, role: role });
 
           const db = await getDB();
-          const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
+          const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gId, pNum]);
           
           if (pointRow) {
-              // We do NOT update genderRatio in DB, only linePlayers.
-              // This ensures the point retains its original Target Ratio for historical tracking.
               await db.runAsync(
                   'UPDATE points SET linePlayers = ? WHERE id = ?',
                   [JSON.stringify(newLine), pointRow.id]
               );
               
+              // FIX: Explicitly cast null
               await db.runAsync(
                   'INSERT INTO events (pointId, eventType, throwerId, receiverId, defenderId, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
-                  [pointRow.id, 'injury_sub', subPlayerOut.id, playerIn.id, null]
+                  [pointRow.id, 'injury_sub', subPlayerOut.id, playerIn.id, null as number | null]
               );
           }
 
@@ -395,6 +397,8 @@ export default function PointTrackingScreen() {
           confirmSub(playerIn, playerIn.gender as 'male' | 'female');
       }
   };
+
+  // --- Interactions ---
 
   const handleGridTap = (player: Player) => {
       if (gameState === 'offense') {
@@ -454,7 +458,7 @@ export default function PointTrackingScreen() {
           if (last && (last.eventType === 'pass' || last.eventType === 'pickup')) {
               updateLastEvent('drop');
           } else {
-              Alert.alert("Error", "Can only record a drop after a pass or pickup.");
+              Alert.alert("Error", "Can only record a drop immediately after a pass.");
           }
       }
       else if (action === 'dropped_pull') {
@@ -465,11 +469,20 @@ export default function PointTrackingScreen() {
           if (last && last.eventType === 'pass') {
               Alert.alert("Goal!", `Confirm goal for ${getDisplayName(roster.find(p=>p.id===last.receiverId), true)}?`, [
                   { text: "Confirm", onPress: async () => {
-                      await updateLastEvent('goal');
-                      const db = await getDB();
-                      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
-                      if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore+1, opponentScore, pid]);
-                      router.back();
+                      try {
+                          await updateLastEvent('goal');
+                          const db = await getDB();
+                          // FIX: Use integer params [gId, pNum]
+                          const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gId, pNum]))?.id;
+                          if(pid) {
+                              // FIX: Ensure scores are integers
+                              await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore+1, opponentScore, pid]);
+                          }
+                          router.back();
+                      } catch (err) {
+                          console.error(err);
+                          Alert.alert("Error", "Failed to record goal.");
+                      }
                   }},
                   { text: "Cancel", style: 'cancel' }
               ]);
@@ -482,7 +495,7 @@ export default function PointTrackingScreen() {
               { text: "Confirm", onPress: async () => {
                   await saveEvent('thrown_callahan', currentHolderId, null, null);
                   const db = await getDB();
-                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
+                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gId, pNum]))?.id;
                   if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore, opponentScore+1, pid]);
                   router.back();
               }},
@@ -497,7 +510,7 @@ export default function PointTrackingScreen() {
               { text: 'Confirm', onPress: async () => {
                   await saveEvent('opp_goal', null, null, null);
                   const db = await getDB();
-                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
+                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gId, pNum]))?.id;
                   if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore, opponentScore+1, pid]);
                   router.back();
               }},
@@ -533,16 +546,16 @@ export default function PointTrackingScreen() {
 
   const persistLine = async (newLine: LinePlayer[]) => {
     const db = await getDB();
-    const pointRow = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
+    const pointRow = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gId, pNum]);
     let m = 0, f = 0; newLine.forEach(lp => lp.role === 'male' ? m++ : f++);
     const calculatedRatio = `${m}m${f}f`;
     
     const startO = startingOnOffense ? 1 : 0;
 
     if (!pointRow) {
-      await db.runAsync('INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers, genderRatio) VALUES (?, ?, ?, ?, ?, ?, ?)', [safeGameId, safePointNumber, startOurScore, startOpponentScore, startO, JSON.stringify(newLine), calculatedRatio]);
+      await db.runAsync('INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers, genderRatio) VALUES (?, ?, ?, ?, ?, ?, ?)', [gId, pNum, startOurScore, startOpponentScore, startO, JSON.stringify(newLine), calculatedRatio]);
     } else {
-      await db.runAsync('UPDATE points SET linePlayers = ?, genderRatio = ? WHERE gameId = ? AND pointNumber = ?', [JSON.stringify(newLine), calculatedRatio, safeGameId, safePointNumber]);
+      await db.runAsync('UPDATE points SET linePlayers = ?, genderRatio = ? WHERE gameId = ? AND pointNumber = ?', [JSON.stringify(newLine), calculatedRatio, gId, pNum]);
     }
     setLine(newLine);
     setLineModalVisible(false);
@@ -551,7 +564,7 @@ export default function PointTrackingScreen() {
   const recordPull = async (outcome: 'good' | 'ob') => {
       try {
         const db = await getDB();
-        const pointResult = await db.getFirstAsync<{ id: number }>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
+        const pointResult = await db.getFirstAsync<{ id: number }>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gId, pNum]);
         if (!pointResult) return; 
         const eventType = outcome === 'ob' ? 'pull_ob' : 'pull';
         
@@ -638,157 +651,159 @@ export default function PointTrackingScreen() {
           </View>
       )}
 
-      <View style={styles.lineGridSection}>
-        <View style={styles.lineHeader}>
-          <Text style={styles.lineTitle}>Line ({line.length}/{game?.teamSize})</Text>
-          <View style={{flexDirection: 'row', gap: 15}}>
-              <TouchableOpacity onPress={handleInjurySubStart}>
-                <FontAwesome name="exchange" size={20} color="#e67e22" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setLineModalVisible(true)}>
-                <FontAwesome name="edit" size={20} color="#27ae60" />
-              </TouchableOpacity>
-          </View>
-        </View>
-        <View style={styles.lineGrid}>
-          {Array.from({ length: 8 }).map((_, index) => {
-            const linePlayer = line[index];
-            if (!linePlayer) return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
-            const player = roster.find(p => p.id === linePlayer.id);
-            if (!player) return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
-            
-            const isHolder = currentHolderId === player.id;
+      <View style={styles.contentContainer}>
+          <View style={styles.lineGridSection}>
+            <View style={styles.lineHeader}>
+              <Text style={styles.lineTitle}>Line ({line.length}/{game?.teamSize})</Text>
+              <View style={{flexDirection: 'row', gap: 15}}>
+                  <TouchableOpacity onPress={handleInjurySubStart}>
+                    <FontAwesome name="exchange" size={20} color="#e67e22" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setLineModalVisible(true)}>
+                    <FontAwesome name="edit" size={20} color="#27ae60" />
+                  </TouchableOpacity>
+              </View>
+            </View>
+            <View style={styles.lineGrid}>
+              {Array.from({ length: 8 }).map((_, index) => {
+                const linePlayer = line[index];
+                if (!linePlayer) return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
+                const player = roster.find(p => p.id === linePlayer.id);
+                if (!player) return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
+                
+                const isHolder = currentHolderId === player.id;
 
-            return (
-              <TouchableOpacity
-                key={linePlayer.id}
-                style={[
-                    styles.linePlayerButton, 
-                    isHolder && styles.holderButton,
-                ]}
-                onPress={() => handleGridTap(player)}
-                onLongPress={() => handleGridLongPress(player)}
-              >
-                <Text style={[styles.linePlayerName, isHolder && styles.holderText]}>
-                  {getDisplayName(player, true)}
-                </Text>
-                {isHolder && <FontAwesome name="circle" size={10} color="#fff" style={{marginTop: 4}} />}
-                {game?.genderRule !== 'none' && (
-                    <View style={styles.roleBadge}>
-                       <Text style={styles.roleText}>{linePlayer.role === 'male' ? 'M' : 'F'}</Text>
-                    </View>
-                )}
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </View>
-
-      <View style={styles.eventGridSection}>
-        <View style={styles.eventGrid}>
-          {gameState === 'offense' && (
-             <>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('goal')}>
-                 <FontAwesome name="flag-checkered" size={28} color="#fff" />
-                 <Text style={styles.eventText}>Goal</Text>
-               </TouchableOpacity>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('throwaway')}>
-                 <FontAwesome name="exclamation-triangle" size={28} color="#fff" />
-                 <Text style={styles.eventText}>Throwaway</Text>
-               </TouchableOpacity>
-               {canDropPull ? (
-                   <TouchableOpacity style={[styles.eventBtn, {backgroundColor: '#c0392b'}]} onPress={() => handleAction('dropped_pull')}>
-                     <FontAwesome name="times-circle" size={28} color="#fff" />
-                     <Text style={styles.eventText}>Dropped Pull</Text>
-                   </TouchableOpacity>
-               ) : (
-                   <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('drop')}>
-                     <FontAwesome name="arrow-down" size={28} color="#fff" />
-                     <Text style={styles.eventText}>Drop</Text>
-                   </TouchableOpacity>
-               )}
-               <TouchableOpacity style={[styles.eventBtn, {backgroundColor: '#c0392b'}]} onPress={() => handleAction('thrown_callahan')}>
-                    <FontAwesome name="frown-o" size={28} color="#fff" />
-                    <Text style={styles.eventText}>Opp Call.</Text>
-               </TouchableOpacity>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('stall')}>
-                 <FontAwesome name="hourglass-end" size={28} color="#fff" />
-                 <Text style={styles.eventText}>Stall</Text>
-               </TouchableOpacity>
-             </>
-          )}
-
-          {gameState === 'defense' && (
-             <>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('opp_turn')}>
-                 <FontAwesome name="random" size={28} color="#fff" />
-                 <Text style={styles.eventText}>Opp Turn</Text>
-               </TouchableOpacity>
-               <TouchableOpacity style={[styles.eventBtn, { backgroundColor: '#e67e22' }]} onPress={() => handleAction('opp_goal')}>
-                 <FontAwesome name="times-circle" size={28} color="#fff" />
-                 <Text style={styles.eventText}>Opp Goal</Text>
-               </TouchableOpacity>
-             </>
-          )}
-
-          {gameState === 'receiving_pull' && (
-             <>
-                <View style={{width: '100%', alignItems: 'center', marginBottom: 10}}>
-                    <Text style={{color: '#7f8c8d', fontSize: 16}}>Tap player who received/picked up</Text>
-                </View>
-                <TouchableOpacity style={[styles.eventBtn, { backgroundColor: '#e74c3c' }]} onPress={() => recordOpponentPull('ob')}>
-                    <FontAwesome name="ban" size={28} color="#fff" />
-                    <Text style={styles.eventText}>Out of Bounds</Text>
-                </TouchableOpacity>
-             </>
-          )}
-
-          {/* Always show Undo */}
-          <TouchableOpacity style={[styles.eventBtn, styles.undoBtn]} onPress={undoLastEvent}>
-            <FontAwesome name="undo" size={28} color="#fff" />
-            <Text style={styles.eventText}>Undo</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <View style={styles.eventsSection}>
-        <Text style={styles.eventsTitle}>Events ({events.length})</Text>
-        <ScrollView ref={scrollRef} style={styles.eventsScroll}>
-          {events.length === 0 ? (
-             <Text style={styles.emptyEvents}>Waiting for start...</Text>
-          ) : (
-            events.map((event, index) => {
-              const thrower = roster.find(p => p.id === event.throwerId);
-              const receiver = roster.find(p => p.id === event.receiverId);
-              const defender = roster.find(p => p.id === event.defenderId);
-              
-              let desc = event.eventType.toUpperCase();
-              if (event.eventType === 'pass') desc = `${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
-              if (event.eventType === 'pickup') desc = `Pickup: ${getDisplayName(thrower, false)}`;
-              if (event.eventType === 'pull') desc = thrower ? `Pull: ${getDisplayName(thrower, false)}` : `Opponent Pull (Good)`;
-              if (event.eventType === 'pull_ob') desc = thrower ? `Pull OB: ${getDisplayName(thrower, false)}` : `Opponent Pull (OB)`;
-              if (event.eventType === 'goal') desc = `GOAL: ${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
-              if (event.eventType === 'throwaway') desc = `Throwaway: ${getDisplayName(thrower, false)}`;
-              if (event.eventType === 'drop') desc = `Drop: ${getDisplayName(receiver, false)} (from ${getDisplayName(thrower, false)})`;
-              if (event.eventType === 'dropped_pull') desc = `Dropped Pull: ${getDisplayName(thrower, false)}`;
-              if (event.eventType === 'd') desc = `D: ${getDisplayName(defender, false)}`;
-              if (event.eventType === 'interception') desc = `Int: ${getDisplayName(defender, false)}`;
-              if (event.eventType === 'callahan' && defender) desc = `Callahan: ${getDisplayName(defender, false)} (Goal + D)`;
-              if (event.eventType === 'thrown_callahan') desc = `Thrown Callahan (Goal for Opponent)`;
-              if (event.eventType === 'injury_sub') desc = `Sub: ${getDisplayName(thrower, false)} OUT, ${getDisplayName(receiver, false)} IN`;
-              if (event.eventType === 'correction') desc = `Correction: Disc set to ${getDisplayName(thrower, false)}`;
-              if (event.eventType === 'stall') desc = `Stall: ${getDisplayName(thrower, false)}`;
-
-              return (
-                <TouchableOpacity key={event.id} onPress={() => handleEventTap(event, index)}>
-                    <Text style={styles.eventItem}>
-                        {index + 1}. {desc}
+                return (
+                  <TouchableOpacity
+                    key={linePlayer.id}
+                    style={[
+                        styles.linePlayerButton, 
+                        isHolder && styles.holderButton,
+                    ]}
+                    onPress={() => handleGridTap(player)}
+                    onLongPress={() => handleGridLongPress(player)}
+                  >
+                    <Text style={[styles.linePlayerName, isHolder && styles.holderText]}>
+                      {getDisplayName(player, true)}
                     </Text>
-                </TouchableOpacity>
-              );
-            })
-          )}
-        </ScrollView>
+                    {isHolder && <FontAwesome name="circle" size={10} color="#fff" style={{marginTop: 4}} />}
+                    {game?.genderRule !== 'none' && (
+                        <View style={styles.roleBadge}>
+                           <Text style={styles.roleText}>{linePlayer.role === 'male' ? 'M' : 'F'}</Text>
+                        </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.eventGridSection}>
+            <View style={styles.eventGrid}>
+              {gameState === 'offense' && (
+                 <>
+                   <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('goal')}>
+                     <FontAwesome name="flag-checkered" size={28} color="#fff" />
+                     <Text style={styles.eventText}>Goal</Text>
+                   </TouchableOpacity>
+                   <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('throwaway')}>
+                     <FontAwesome name="exclamation-triangle" size={28} color="#fff" />
+                     <Text style={styles.eventText}>Throwaway</Text>
+                   </TouchableOpacity>
+                   {canDropPull ? (
+                       <TouchableOpacity style={[styles.eventBtn, {backgroundColor: '#c0392b'}]} onPress={() => handleAction('dropped_pull')}>
+                         <FontAwesome name="times-circle" size={28} color="#fff" />
+                         <Text style={styles.eventText}>Dropped Pull</Text>
+                       </TouchableOpacity>
+                   ) : (
+                       <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('drop')}>
+                         <FontAwesome name="arrow-down" size={28} color="#fff" />
+                         <Text style={styles.eventText}>Drop</Text>
+                       </TouchableOpacity>
+                   )}
+                   <TouchableOpacity style={[styles.eventBtn, {backgroundColor: '#c0392b'}]} onPress={() => handleAction('thrown_callahan')}>
+                        <FontAwesome name="frown-o" size={28} color="#fff" />
+                        <Text style={styles.eventText}>Opp Call.</Text>
+                   </TouchableOpacity>
+                   <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('stall')}>
+                     <FontAwesome name="hourglass-end" size={28} color="#fff" />
+                     <Text style={styles.eventText}>Stall</Text>
+                   </TouchableOpacity>
+                 </>
+              )}
+
+              {gameState === 'defense' && (
+                 <>
+                   <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('opp_turn')}>
+                     <FontAwesome name="random" size={28} color="#fff" />
+                     <Text style={styles.eventText}>Opp Turn</Text>
+                   </TouchableOpacity>
+                   <TouchableOpacity style={[styles.eventBtn, { backgroundColor: '#e67e22' }]} onPress={() => handleAction('opp_goal')}>
+                     <FontAwesome name="times-circle" size={28} color="#fff" />
+                     <Text style={styles.eventText}>Opp Goal</Text>
+                   </TouchableOpacity>
+                 </>
+              )}
+
+              {gameState === 'receiving_pull' && (
+                 <>
+                    <View style={{width: '100%', alignItems: 'center', marginBottom: 10}}>
+                        <Text style={{color: '#7f8c8d', fontSize: 16}}>Tap player who received/picked up</Text>
+                    </View>
+                    <TouchableOpacity style={[styles.eventBtn, { backgroundColor: '#e74c3c' }]} onPress={() => recordOpponentPull('ob')}>
+                        <FontAwesome name="ban" size={28} color="#fff" />
+                        <Text style={styles.eventText}>Out of Bounds</Text>
+                    </TouchableOpacity>
+                 </>
+              )}
+
+              {/* Always show Undo */}
+              <TouchableOpacity style={[styles.eventBtn, styles.undoBtn]} onPress={undoLastEvent}>
+                <FontAwesome name="undo" size={28} color="#fff" />
+                <Text style={styles.eventText}>Undo</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.eventsSection}>
+            <Text style={styles.eventsTitle}>Events ({events.length})</Text>
+            <ScrollView ref={scrollRef} style={styles.eventsScroll}>
+              {events.length === 0 ? (
+                 <Text style={styles.emptyEvents}>Waiting for start...</Text>
+              ) : (
+                events.map((event, index) => {
+                  const thrower = roster.find(p => p.id === event.throwerId);
+                  const receiver = roster.find(p => p.id === event.receiverId);
+                  const defender = roster.find(p => p.id === event.defenderId);
+                  
+                  let desc = event.eventType.toUpperCase();
+                  if (event.eventType === 'pass') desc = `${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
+                  if (event.eventType === 'pickup') desc = `Pickup: ${getDisplayName(thrower, false)}`;
+                  if (event.eventType === 'pull') desc = thrower ? `Pull: ${getDisplayName(thrower, false)}` : `Opponent Pull (Good)`;
+                  if (event.eventType === 'pull_ob') desc = thrower ? `Pull OB: ${getDisplayName(thrower, false)}` : `Opponent Pull (OB)`;
+                  if (event.eventType === 'goal') desc = `GOAL: ${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
+                  if (event.eventType === 'throwaway') desc = `Throwaway: ${getDisplayName(thrower, false)}`;
+                  if (event.eventType === 'drop') desc = `Drop: ${getDisplayName(receiver, false)} (from ${getDisplayName(thrower, false)})`;
+                  if (event.eventType === 'dropped_pull') desc = `Dropped Pull: ${getDisplayName(thrower, false)}`;
+                  if (event.eventType === 'd') desc = `D: ${getDisplayName(defender, false)}`;
+                  if (event.eventType === 'interception') desc = `Int: ${getDisplayName(defender, false)}`;
+                  if (event.eventType === 'callahan' && defender) desc = `Callahan: ${getDisplayName(defender, false)} (Goal + D)`;
+                  if (event.eventType === 'thrown_callahan') desc = `Thrown Callahan (Goal for Opponent)`;
+                  if (event.eventType === 'injury_sub') desc = `Sub: ${getDisplayName(thrower, false)} OUT, ${getDisplayName(receiver, false)} IN`;
+                  if (event.eventType === 'correction') desc = `Correction: Disc set to ${getDisplayName(thrower, false)}`;
+                  if (event.eventType === 'stall') desc = `Stall: ${getDisplayName(thrower, false)}`;
+
+                  return (
+                    <TouchableOpacity key={event.id} onPress={() => handleEventTap(event, index)}>
+                        <Text style={styles.eventItem}>
+                            {index + 1}. {desc}
+                        </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </ScrollView>
+          </View>
       </View>
 
       <Modal visible={lineModalVisible} animationType="slide">
@@ -980,7 +995,10 @@ const styles = StyleSheet.create({
   scoreText: { fontSize: 24, fontWeight: 'bold', color: '#27ae60', marginVertical: 4 },
   targetText: { fontSize: 14, color: '#34495e', fontWeight: 'bold', marginBottom: 4 },
   possessionText: { fontSize: 16, color: '#27ae60', fontWeight: '600' },
-  lineGridSection: { flex: 0.38, padding: 15, backgroundColor: '#fff' },
+  
+  contentContainer: { flex: 1 }, 
+  
+  lineGridSection: { flex: 4, padding: 15, backgroundColor: '#fff', overflow: 'hidden' }, // Fixed overflow for Android
   lineHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   lineTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50' },
   lineGrid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' },
@@ -994,16 +1012,19 @@ const styles = StyleSheet.create({
   linePlayerEmpty: { width: '23%', aspectRatio: 1, margin: '1%' },
   roleBadge: { position: 'absolute', top: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.1)', paddingHorizontal: 4, borderRadius: 4 },
   roleText: { fontSize: 10, fontWeight: 'bold', color: '#333' },
-  eventGridSection: { flex: 0.37, justifyContent: 'center', backgroundColor: '#f8f9fa' },
+  
+  eventGridSection: { flex: 4, justifyContent: 'center', backgroundColor: '#f8f9fa', overflow: 'hidden' },
   eventGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 10 },
   eventBtn: { backgroundColor: '#34495e', width: 90, height: 90, borderRadius: 16, justifyContent: 'center', alignItems: 'center', margin: 6, elevation: 4 },
   undoBtn: { backgroundColor: '#e74c3c' },
   eventText: { color: '#fff', fontSize: 13, fontWeight: 'bold', marginTop: 4, textAlign: 'center' },
-  eventsSection: { flex: 0.25, paddingHorizontal: 20, paddingTop: 10, backgroundColor: '#fff' },
+  
+  eventsSection: { flex: 3, paddingHorizontal: 20, paddingTop: 10, backgroundColor: '#fff', overflow: 'hidden' },
   eventsTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50', marginBottom: 10 },
   eventsScroll: { flex: 1 },
   emptyEvents: { fontSize: 16, color: '#7f8c8d', textAlign: 'center', marginTop: 20 },
   eventItem: { fontSize: 16, color: '#34495e', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#eee' },
+  
   loading: { fontSize: 18, textAlign: 'center', marginTop: 50, color: '#7f8c8d' },
   
   modalContainer: { flex: 1, backgroundColor: '#f8f9fa', padding: 20, paddingTop: 60 },
