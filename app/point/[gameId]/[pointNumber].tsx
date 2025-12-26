@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, Modal } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, Modal, AlertButton } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { getDB } from '../../../database/db';
@@ -36,6 +36,9 @@ type LinePlayer = {
   role: 'male' | 'female';
 };
 
+// The State Machine
+type GameState = 'awaiting_pull' | 'defense' | 'awaiting_pickup' | 'offense';
+
 export default function PointTrackingScreen() {
   const { gameId, pointNumber } = useLocalSearchParams<{ gameId: string; pointNumber: string }>();
   const router = useRouter();
@@ -46,26 +49,30 @@ export default function PointTrackingScreen() {
   const [line, setLine] = useState<LinePlayer[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   
+  // Game State
+  const [gameState, setGameState] = useState<GameState>('awaiting_pull');
+  const [currentHolderId, setCurrentHolderId] = useState<number | null>(null);
+  const [startingOnOffense, setStartingOnOffense] = useState(false);
+  
+  // Modals & Metadata
+  const [lineModalVisible, setLineModalVisible] = useState(false);
+  const [pullModalVisible, setPullModalVisible] = useState(false);
+  const [pullStep, setPullStep] = useState<'who' | 'outcome'>('who');
+  const [pullerId, setPullerId] = useState<number | null>(null);
+  const [targetRatio, setTargetRatio] = useState<{m: number, f: number}>({m: 4, f: 3});
+  const [ratioLocked, setRatioLocked] = useState(false); 
+
+  // Scores
   const [ourScore, setOurScore] = useState(0);
   const [opponentScore, setOpponentScore] = useState(0);
   const [startOurScore, setStartOurScore] = useState(0); 
   const [startOpponentScore, setStartOpponentScore] = useState(0);
 
-  const [possession, setPossession] = useState<'our' | 'opponent'>('our');
-  const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
-  
-  const [lineModalVisible, setLineModalVisible] = useState(false);
-  const [pullModalVisible, setPullModalVisible] = useState(false);
-  const [pullStep, setPullStep] = useState<'who' | 'outcome'>('who');
-  const [pullerId, setPullerId] = useState<number | null>(null);
-
-  const [targetRatio, setTargetRatio] = useState<{m: number, f: number}>({m: 4, f: 3});
-  const [ratioLocked, setRatioLocked] = useState(false); 
-
-  const [loading, setLoading] = useState(true);
   const scrollRef = useRef<ScrollView>(null);
 
-  const getDisplayName = (player: Player, short: boolean) => {
+  // --- Helpers ---
+  const getDisplayName = (player: Player | undefined, short: boolean) => {
+      if (!player) return 'Unknown';
       if (short) {
           return `${player.firstName} ${player.lastName ? player.lastName.charAt(0) + '.' : ''}`.trim();
       }
@@ -81,6 +88,7 @@ export default function PointTrackingScreen() {
     return { m, f };
   };
 
+  // --- Data Loading ---
   const loadData = async () => {
     try {
       const db = await getDB();
@@ -99,6 +107,7 @@ export default function PointTrackingScreen() {
         setRoster(playersResult);
       }
 
+      // Determine Start State
       let initialOurScore = 0, initialOpponentScore = 0, weArePulling = false;
       if (pNum === 1) {
         weArePulling = gameResult?.startingPuller === 'our';
@@ -121,40 +130,31 @@ export default function PointTrackingScreen() {
       setStartOpponentScore(initialOpponentScore);
       setOurScore(initialOurScore);
       setOpponentScore(initialOpponentScore);
+      setStartingOnOffense(!weArePulling);
 
+      // ABBA Logic
       const teamSize = gameResult?.teamSize || 7;
       let defaultM = Math.ceil(teamSize / 2);
       let defaultF = Math.floor(teamSize / 2);
       let isLocked = false;
-
       if (gameResult?.genderRule === 'abba') {
-         if (pNum === 1) {
-             isLocked = false;
-         } else {
+         if (pNum === 1) { isLocked = false; } else {
              isLocked = true;
              const p1 = await db.getFirstAsync<{ genderRatio: string }>('SELECT genderRatio FROM points WHERE gameId = ? AND pointNumber = 1', [gameId]);
-             
              const p1Str = p1?.genderRatio || `${defaultM}m${defaultF}f`;
              const mMatch = p1Str.match(/(\d+)m/);
              const p1M = mMatch ? parseInt(mMatch[1]) : defaultM;
-             
              const cycle = Math.floor((pNum - 2) / 2) % 2; 
              const isSwap = cycle === 0; 
-             
              const p1MaleHeavy = p1M > (teamSize / 2);
-             
-             if (isSwap) {
-                 defaultM = p1MaleHeavy ? Math.floor(teamSize / 2) : Math.ceil(teamSize / 2);
-                 defaultF = teamSize - defaultM;
-             } else {
-                 defaultM = p1MaleHeavy ? Math.ceil(teamSize / 2) : Math.floor(teamSize / 2);
-                 defaultF = teamSize - defaultM;
-             }
+             if (isSwap) { defaultM = p1MaleHeavy ? Math.floor(teamSize / 2) : Math.ceil(teamSize / 2); defaultF = teamSize - defaultM; } 
+             else { defaultM = p1MaleHeavy ? Math.ceil(teamSize / 2) : Math.floor(teamSize / 2); defaultF = teamSize - defaultM; }
          }
          setTargetRatio({ m: defaultM, f: defaultF });
          setRatioLocked(isLocked);
       }
 
+      // Load Point
       const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null; startingOLine: boolean; genderRatio: string }>(
         'SELECT * FROM points WHERE gameId = ? AND pointNumber = ?',
         [gameId, pointNumber]
@@ -167,8 +167,7 @@ export default function PointTrackingScreen() {
         if (pointResult.linePlayers) {
           const rawLine = JSON.parse(pointResult.linePlayers);
           if (rawLine.length > 0 && typeof rawLine[0] === 'number') {
-             const convertedLine: LinePlayer[] = rawLine.map((id: number) => ({ id, role: 'male' })); 
-             setLine(convertedLine);
+             setLine(rawLine.map((id: number) => ({ id, role: 'male' }))); 
           } else {
              setLine(rawLine);
           }
@@ -177,255 +176,273 @@ export default function PointTrackingScreen() {
         if (gameResult?.genderRule === 'abba' && pointResult.genderRatio) {
             const mMatch = pointResult.genderRatio.match(/(\d+)m/);
             const fMatch = pointResult.genderRatio.match(/(\d+)f/);
-            if (mMatch && fMatch) {
-                setTargetRatio({ m: parseInt(mMatch[1]), f: parseInt(fMatch[1]) });
-            }
+            if (mMatch && fMatch) setTargetRatio({ m: parseInt(mMatch[1]), f: parseInt(fMatch[1]) });
         }
 
-        if (eventsResult.length > 0) {
-            const last = eventsResult[eventsResult.length - 1];
-            if (['pull', 'pull_ob', 'throwaway', 'drop', 'd'].includes(last.eventType)) {
-                if (last.eventType === 'd') setPossession('our');
-                else setPossession('opponent');
-            } else if (last.eventType === 'goal') {
-                setPossession('opponent'); 
-            }
+        // --- Reconstruct Game State from Event Log ---
+        if (eventsResult.length === 0) {
+            if (pointResult.startingOLine) setGameState('awaiting_pickup'); 
+            else setGameState('awaiting_pull');
         } else {
-            setPossession(pointResult.startingOLine ? 'our' : 'opponent');
+            let lastState: GameState = 'defense';
+            let holder: number | null = null;
+
+            eventsResult.forEach(e => {
+                if (e.eventType === 'pull') lastState = 'defense';
+                else if (e.eventType === 'pull_ob') lastState = 'awaiting_pickup';
+                else if (e.eventType === 'pickup') { lastState = 'offense'; holder = e.throwerId; }
+                else if (e.eventType === 'pass') { lastState = 'offense'; holder = e.receiverId; }
+                else if (e.eventType === 'drop') { lastState = 'defense'; holder = null; }
+                else if (e.eventType === 'throwaway') { lastState = 'defense'; holder = null; }
+                else if (e.eventType === 'stall') { lastState = 'defense'; holder = null; }
+                else if (e.eventType === 'd') { lastState = 'awaiting_pickup'; holder = null; }
+                else if (e.eventType === 'interception') { lastState = 'offense'; holder = e.defenderId; }
+                else if (e.eventType === 'opp_turn') { lastState = 'awaiting_pickup'; holder = null; }
+                else if (e.eventType === 'goal') { lastState = 'awaiting_pull'; holder = null; }
+                else if (e.eventType === 'callahan') { lastState = 'awaiting_pull'; holder = null; }
+                else if (e.eventType === 'opp_goal') { lastState = 'awaiting_pull'; holder = null; }
+            });
+            setGameState(lastState);
+            setCurrentHolderId(holder);
         }
+
       } else {
-        const startOnO = !weArePulling;
-        setPossession(startOnO ? 'our' : 'opponent');
+        // New Point
+        setGameState(weArePulling ? 'awaiting_pull' : 'awaiting_pickup');
         setLineModalVisible(true);
       }
 
     } catch (error) {
       console.error(error);
       Alert.alert('Error', 'Failed to load point.');
-    } finally {
-      setLoading(false);
     }
   };
 
   useEffect(() => { loadData(); }, [gameId, pointNumber]);
+  useEffect(() => { scrollRef.current?.scrollToEnd({ animated: true }); }, [events]);
 
+  // Trigger Pull Modal if we are pulling
   useEffect(() => {
-    scrollRef.current?.scrollToEnd({ animated: true });
-  }, [events]);
-
-  useEffect(() => {
-    if (!loading && !lineModalVisible && events.length === 0 && line.length > 0) {
-        if (possession === 'opponent') {
-            setPullStep('who');
-            setPullModalVisible(true);
-        }
+    if (!lineModalVisible && gameState === 'awaiting_pull' && events.length === 0 && line.length > 0) {
+        setPullStep('who');
+        setPullModalVisible(true);
     }
-  }, [loading, lineModalVisible, events, line, possession]);
+  }, [lineModalVisible, gameState, events, line]);
 
 
-  const cycleTargetRatio = () => {
-      if (ratioLocked || game?.genderRule !== 'abba') {
-          return;
+  // --- DB Operations ---
+  const saveEvent = async (type: string, thrower: number|null, receiver: number|null, defender: number|null) => {
+      const db = await getDB();
+      const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+      if (!pointRow) return;
+
+      const t = (thrower ?? null) as number | null;
+      const r = (receiver ?? null) as number | null;
+      const d = (defender ?? null) as number | null;
+
+      await db.runAsync(
+          'INSERT INTO events (pointId, eventType, throwerId, receiverId, defenderId, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+          [pointRow.id, type, t, r, d]
+      );
+      await loadData();
+  };
+
+  const updateLastEvent = async (newType: string) => {
+      const db = await getDB();
+      const lastEvent = events[events.length - 1];
+      if (!lastEvent) return;
+
+      await db.runAsync('UPDATE events SET eventType = ? WHERE id = ?', [newType, lastEvent.id]);
+      await loadData();
+  };
+
+  const recordCallahan = async (playerId: number) => {
+      await saveEvent('callahan', null, null, playerId);
+      const db = await getDB();
+      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+      if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore+1, opponentScore, pid]);
+      router.back();
+  };
+
+  // --- Interactions ---
+
+  const handleGridTap = (player: Player) => {
+      if (gameState === 'offense') {
+          // PASS (Optimistic: Assume catch)
+          if (currentHolderId === player.id) return; 
+          saveEvent('pass', currentHolderId, player.id, null);
+      } 
+      else if (gameState === 'defense') {
+          // DEFENSIVE PLAY MENU
+          Alert.alert(
+              `Defensive Play: ${getDisplayName(player, true)}`,
+              'Select action:',
+              [
+                  { text: 'Block (Knockdown)', onPress: () => saveEvent('d', null, null, player.id) },
+                  { text: 'Interception', onPress: () => {
+                      const run = async () => { await saveEvent('interception', null, null, player.id); };
+                      run();
+                  }},
+                  { text: 'Callahan (Goal)', onPress: () => {
+                      const run = async () => { await recordCallahan(player.id); };
+                      run();
+                  }},
+                  { text: 'Cancel', style: 'cancel' }
+              ]
+          );
       }
-
-      const size = game?.teamSize || 7;
-      let newM = targetRatio.m;
-      let newF = targetRatio.f;
-      
-      if (size === 7) {
-          if (newM === 4) { newM = 3; newF = 4; }
-          else { newM = 4; newF = 3; }
-      } else if (size === 6) {
-          if (newM === 3) { newM = 4; newF = 2; }
-          else if (newM === 4) { newM = 2; newF = 4; }
-          else { newM = 3; newF = 3; }
-      } else if (size === 5) {
-          if (newM === 3) { newM = 2; newF = 3; }
-          else { newM = 3; newF = 2; }
+      else if (gameState === 'awaiting_pickup') {
+          // PICKUP
+          saveEvent('pickup', player.id, null, null);
       }
+  };
 
-      setTargetRatio({ m: newM, f: newF });
+  const handleAction = (action: string) => {
+      if (action === 'throwaway') {
+          saveEvent('throwaway', currentHolderId, null, null);
+      }
+      else if (action === 'stall') {
+          saveEvent('stall', currentHolderId, null, null);
+      }
+      else if (action === 'drop') {
+          // CONVERT LAST PASS TO DROP
+          const last = events[events.length - 1];
+          if (last && last.eventType === 'pass') {
+              updateLastEvent('drop');
+          } else {
+              Alert.alert("Error", "Can only record a drop immediately after a pass.");
+          }
+      }
+      else if (action === 'goal') {
+          // CONVERT LAST PASS TO GOAL
+          const last = events[events.length - 1];
+          if (last && last.eventType === 'pass') {
+              Alert.alert("Goal!", `Confirm goal for ${getDisplayName(roster.find(p=>p.id===last.receiverId), true)}?`, [
+                  { text: "Confirm", onPress: async () => {
+                      await updateLastEvent('goal');
+                      const db = await getDB();
+                      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+                      if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore+1, opponentScore, pid]);
+                      router.back();
+                  }},
+                  { text: "Cancel", style: 'cancel' }
+              ]);
+          } else {
+              Alert.alert("Error", "Can only record a goal immediately after a pass.");
+          }
+      }
+      else if (action === 'opp_turn') {
+          saveEvent('opp_turn', null, null, null);
+      }
+      else if (action === 'opp_goal') {
+          Alert.alert('Opponent Scored', 'Confirm?', [
+              { text: 'Confirm', onPress: async () => {
+                  await saveEvent('opp_goal', null, null, null);
+                  const db = await getDB();
+                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+                  if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore, opponentScore+1, pid]);
+                  router.back();
+              }},
+              { text: 'Cancel', style: 'cancel'}
+          ]);
+      }
+  };
+
+  const undoLastEvent = async () => {
+      const db = await getDB();
+      const last = events[events.length-1];
+      if (last) {
+          await db.runAsync('DELETE FROM events WHERE id=?', [last.id]);
+          await loadData();
+      }
   };
 
   const saveLine = async (newLine: LinePlayer[]) => {
     const issues: string[] = [];
     const teamSize = game?.teamSize || 7;
-
-    // 1. Check Count
-    if (newLine.length !== teamSize) {
-        issues.push(`• Player Count: ${newLine.length}/${teamSize}`);
-    }
-
-    // 2. Check Ratio (Only strict for ABBA)
+    if (newLine.length !== teamSize) issues.push(`• Player Count: ${newLine.length}/${teamSize}`);
     if (game?.genderRule === 'abba') {
         let m = 0, f = 0;
         newLine.forEach(lp => lp.role === 'male' ? m++ : f++);
-        
-        if (m !== targetRatio.m || f !== targetRatio.f) {
-            issues.push(`• Gender Ratio: ${m}M/${f}F (Target: ${targetRatio.m}M/${targetRatio.f}F)`);
-        }
+        if (m !== targetRatio.m || f !== targetRatio.f) issues.push(`• Gender Ratio: ${m}M/${f}F (Target: ${targetRatio.m}M/${targetRatio.f}F)`);
     }
-
     if (issues.length > 0) {
-        Alert.alert(
-            'Line Issues',
-            `The following checks failed:\n\n${issues.join('\n')}\n\nSave anyway?`,
-            [
-                { text: 'Fix Line', style: 'cancel' },
-                { text: 'Save Anyway', style: 'destructive', onPress: () => persistLine(newLine) }
-            ]
-        );
+        Alert.alert('Line Issues', `The following checks failed:\n\n${issues.join('\n')}\n\nSave anyway?`, [{ text: 'Fix Line', style: 'cancel' }, { text: 'Save Anyway', style: 'destructive', onPress: () => persistLine(newLine) }]);
         return;
     }
-
     await persistLine(newLine);
   };
 
   const persistLine = async (newLine: LinePlayer[]) => {
     const db = await getDB();
     const pointRow = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
-    
-    let m = 0, f = 0;
-    newLine.forEach(lp => lp.role === 'male' ? m++ : f++);
+    let m = 0, f = 0; newLine.forEach(lp => lp.role === 'male' ? m++ : f++);
     const calculatedRatio = `${m}m${f}f`;
+    
+    const startO = startingOnOffense ? 1 : 0;
 
     if (!pointRow) {
-      await db.runAsync(
-        'INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers, genderRatio) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [gameId, pointNumber, startOurScore, startOpponentScore, possession === 'our', JSON.stringify(newLine), calculatedRatio]
-      );
+      await db.runAsync('INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers, genderRatio) VALUES (?, ?, ?, ?, ?, ?, ?)', [gameId, pointNumber, startOurScore, startOpponentScore, startO, JSON.stringify(newLine), calculatedRatio]);
     } else {
-      await db.runAsync(
-        'UPDATE points SET linePlayers = ?, genderRatio = ? WHERE gameId = ? AND pointNumber = ?',
-        [JSON.stringify(newLine), calculatedRatio, gameId, pointNumber]
-      );
+      await db.runAsync('UPDATE points SET linePlayers = ?, genderRatio = ? WHERE gameId = ? AND pointNumber = ?', [JSON.stringify(newLine), calculatedRatio, gameId, pointNumber]);
     }
     setLine(newLine);
     setLineModalVisible(false);
   };
 
-  const handlePullSelection = (playerId: number) => { setPullerId(playerId); setPullStep('outcome'); };
-  
   const recordPull = async (outcome: 'good' | 'ob') => {
-    try {
+      try {
         const db = await getDB();
         const pointResult = await db.getFirstAsync<{ id: number }>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
         if (!pointResult) return; 
-        
         const eventType = outcome === 'ob' ? 'pull_ob' : 'pull';
-        await db.runAsync('INSERT INTO events (pointId, eventType, throwerId, timestamp) VALUES (?, ?, ?, CURRENT_TIMESTAMP)', [pointResult.id, eventType, pullerId]);
+        
+        const pid = (pullerId ?? null) as number | null;
+
+        await db.runAsync('INSERT INTO events (pointId, eventType, throwerId, timestamp) VALUES (?, ?, ?, CURRENT_TIMESTAMP)', [pointResult.id, eventType, pid]);
         setPullModalVisible(false); await loadData(); 
     } catch (e) { Alert.alert("Error", "Failed to record pull"); }
   };
 
-  const recordOpponentScore = async () => {
-      Alert.alert("Opponent Score", "Did the opponent score?", [
-          { text: "Cancel", style: "cancel" },
-          { text: "Confirm", onPress: async () => {
-                const db = await getDB();
-                const pointResult = await db.getFirstAsync<{ id: number }>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
-                if (!pointResult) return;
-                const newOppScore = opponentScore + 1;
-                await db.runAsync('UPDATE points SET ourScoreAfter = ?, opponentScoreAfter = ? WHERE id = ?', [ourScore, newOppScore, pointResult.id]);
-                await db.runAsync('INSERT INTO events (pointId, eventType, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)', [pointResult.id, 'opponent_goal']);
-                router.back();
-          }}
-      ]);
-  };
-  
   const togglePlayerInLine = (player: Player) => {
     const existingIndex = line.findIndex(lp => lp.id === player.id);
-
     if (existingIndex >= 0) {
-        const newLine = [...line];
-        newLine.splice(existingIndex, 1);
-        setLine(newLine);
+        const newLine = [...line]; newLine.splice(existingIndex, 1); setLine(newLine);
     } else {
-        if (line.length >= (game?.teamSize || 7)) {
-            Alert.alert('Line Full', `Maximum ${game?.teamSize || 7} players allowed.`);
-            return;
-        }
-
+        if (line.length >= (game?.teamSize || 7)) { Alert.alert('Line Full', `Maximum ${game?.teamSize || 7} players allowed.`); return; }
         if (player.gender === 'other') {
-            Alert.alert(
-                'Select Matchup Role',
-                `Is ${player.firstName} playing as MMP or FMP this point?`,
-                [
-                    { text: 'MMP (Male)', onPress: () => setLine([...line, { id: player.id, role: 'male' }]) },
-                    { text: 'FMP (Female)', onPress: () => setLine([...line, { id: player.id, role: 'female' }]) },
-                    { text: 'Cancel', style: 'cancel' }
-                ]
-            );
-        } else {
-            setLine([...line, { id: player.id, role: player.gender as 'male' | 'female' }]);
-        }
+            Alert.alert('Select Matchup Role', `Is ${player.firstName} playing as MMP or FMP this point?`, [
+                { text: 'MMP (Male)', onPress: () => setLine([...line, { id: player.id, role: 'male' }]) },
+                { text: 'FMP (Female)', onPress: () => setLine([...line, { id: player.id, role: 'female' }]) },
+                { text: 'Cancel', style: 'cancel' }
+            ]);
+        } else { setLine([...line, { id: player.id, role: player.gender as 'male' | 'female' }]); }
     }
   };
 
-  const recordEvent = async (eventType: string) => {
-    if (eventType === 'opponent_score') { recordOpponentScore(); return; }
-    if (!selectedPlayerId) { Alert.alert('Select Player', 'Tap a player button first.'); return; }
-    
-    const inLine = line.some(lp => lp.id === selectedPlayerId);
-    if (!inLine) { Alert.alert('Not on Field', 'Selected player is not in the current line.'); return; }
-
-    try {
-      const db = await getDB();
-      const pointResult = await db.getFirstAsync<{ id: number }>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
-      if (!pointResult) return;
-
-      let throwerId = null, receiverId = null, defenderId = null;
-      
-      if (eventType === 'goal' || eventType === 'callahan') {
-        let newOurScore = ourScore;
-        if (eventType === 'goal') { receiverId = selectedPlayerId; newOurScore++; }
-        else { defenderId = selectedPlayerId; receiverId = selectedPlayerId; newOurScore++; }
-
-        await db.runAsync('INSERT INTO events (pointId, eventType, throwerId, receiverId, defenderId, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)', [pointResult.id, eventType, throwerId, receiverId, defenderId]);
-        await db.runAsync('UPDATE points SET ourScoreAfter = ?, opponentScoreAfter = ? WHERE id = ?', [newOurScore, opponentScore, pointResult.id]);
-        Alert.alert("Point Finished!", `Score: ${newOurScore} - ${opponentScore}`, [{ text: "Next Point", onPress: () => router.back() }]);
-        return;
-      }
-
-      switch (eventType) {
-        case 'throwaway':
-        case 'drop':
-          throwerId = selectedPlayerId;
-          setPossession(possession === 'our' ? 'opponent' : 'our');
-          break;
-        case 'd':
-          defenderId = selectedPlayerId;
-          setPossession(possession === 'our' ? 'opponent' : 'our');
-          break;
-      }
-
-      await db.runAsync('INSERT INTO events (pointId, eventType, throwerId, receiverId, defenderId, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)', [pointResult.id, eventType, throwerId, receiverId, defenderId]);
-      setSelectedPlayerId(null);
-      await loadData(); 
-    } catch (error) { console.error(error); Alert.alert('Error', 'Failed to record event.'); }
+  const cycleTargetRatio = () => {
+      if (ratioLocked || game?.genderRule !== 'abba') return;
+      const size = game?.teamSize || 7;
+      let newM = targetRatio.m; let newF = targetRatio.f;
+      if (size === 7) { if (newM === 4) { newM = 3; newF = 4; } else { newM = 4; newF = 3; } }
+      setTargetRatio({ m: newM, f: newF });
   };
 
-  const undoLastEvent = async () => {
-    if (events.length === 0) return;
-    Alert.alert('Undo', 'Remove last event?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Undo', style: 'destructive', onPress: async () => {
-            const db = await getDB();
-            const lastEvent = events[events.length - 1];
-            await db.runAsync('DELETE FROM events WHERE id = ?', [lastEvent.id]);
-            await loadData();
-        }},
-    ]);
-  };
-
-  const currentPossession = possession === 'our' ? game?.teamName : game?.opponentName;
+  // Render Vars
   const currentCounts = useMemo(() => getLineCounts(), [line]);
   const isABBA = game?.genderRule === 'abba';
-
-  // VALIDATION STATE
   const isLineFull = line.length === (game?.teamSize || 7);
   const isRatioCorrect = !isABBA || (currentCounts.m === targetRatio.m && currentCounts.f === targetRatio.f);
   const isLineValid = isLineFull && isRatioCorrect;
+
+  // Header Status Logic
+  const getHeaderStatus = () => {
+      if (gameState === 'defense') return `${game?.opponentName} has the disc`;
+      if (gameState === 'offense') return `${game?.teamName} has the disc`;
+      if (gameState === 'awaiting_pickup') return 'Disc on Ground';
+      if (gameState === 'awaiting_pull') return 'Ready for Pull';
+      return '...';
+  };
 
   return (
     <View style={styles.container}>
@@ -434,7 +451,9 @@ export default function PointTrackingScreen() {
       <View style={styles.header}>
         <Text style={styles.pointTitle} numberOfLines={1} adjustsFontSizeToFit>Point {pointNumber}</Text>
         <Text style={styles.scoreText} numberOfLines={1} adjustsFontSizeToFit>{game?.teamName} {ourScore} - {opponentScore} {game?.opponentName}</Text>
-        <Text style={styles.possessionText} numberOfLines={1} adjustsFontSizeToFit>{currentPossession} has the disc</Text>
+        <Text style={styles.possessionText} numberOfLines={1} adjustsFontSizeToFit>
+            {getHeaderStatus()}
+        </Text>
       </View>
 
       <View style={styles.lineGridSection}>
@@ -448,24 +467,24 @@ export default function PointTrackingScreen() {
           {Array.from({ length: 8 }).map((_, index) => {
             const linePlayer = line[index];
             if (!linePlayer) return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
-            
             const player = roster.find(p => p.id === linePlayer.id);
             if (!player) return <View key={`empty-${index}`} style={styles.linePlayerEmpty} />;
             
+            const isHolder = currentHolderId === player.id;
+
             return (
               <TouchableOpacity
                 key={linePlayer.id}
-                style={[styles.linePlayerButton, selectedPlayerId === linePlayer.id && styles.linePlayerSelected]}
-                onPress={() => setSelectedPlayerId(selectedPlayerId === linePlayer.id ? null : linePlayer.id)}
+                style={[
+                    styles.linePlayerButton, 
+                    isHolder && styles.holderButton,
+                ]}
+                onPress={() => handleGridTap(player)}
               >
-                <Text style={styles.linePlayerName} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                <Text style={[styles.linePlayerName, isHolder && styles.holderText]}>
                   {getDisplayName(player, true)}
                 </Text>
-                {player.number != null && (
-                  <Text style={styles.linePlayerNumber} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-                    #{player.number}
-                  </Text>
-                )}
+                {isHolder && <FontAwesome name="circle" size={10} color="#fff" style={{marginTop: 4}} />}
                 {game?.genderRule !== 'none' && (
                     <View style={styles.roleBadge}>
                        <Text style={styles.roleText}>{linePlayer.role === 'male' ? 'M' : 'F'}</Text>
@@ -479,40 +498,43 @@ export default function PointTrackingScreen() {
 
       <View style={styles.eventGridSection}>
         <View style={styles.eventGrid}>
-          {possession === 'our' ? (
+          {gameState === 'offense' && (
              <>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('goal')}>
-                 <FontAwesome name="flag-checkered" size={32} color="#fff" />
+               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('goal')}>
+                 <FontAwesome name="flag-checkered" size={28} color="#fff" />
                  <Text style={styles.eventText}>Goal</Text>
                </TouchableOpacity>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('throwaway')}>
-                 <FontAwesome name="exclamation-triangle" size={32} color="#fff" />
+               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('throwaway')}>
+                 <FontAwesome name="exclamation-triangle" size={28} color="#fff" />
                  <Text style={styles.eventText}>Turn</Text>
                </TouchableOpacity>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('drop')}>
-                 <FontAwesome name="arrow-down" size={32} color="#fff" />
+               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('drop')}>
+                 <FontAwesome name="arrow-down" size={28} color="#fff" />
                  <Text style={styles.eventText}>Drop</Text>
                </TouchableOpacity>
+               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('stall')}>
+                 <FontAwesome name="hourglass-end" size={28} color="#fff" />
+                 <Text style={styles.eventText}>Stall</Text>
+               </TouchableOpacity>
              </>
-          ) : (
+          )}
+
+          {gameState === 'defense' && (
              <>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('d')}>
-                 <FontAwesome name="shield" size={32} color="#fff" />
-                 <Text style={styles.eventText}>D</Text>
+               <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('opp_turn')}>
+                 <FontAwesome name="random" size={28} color="#fff" />
+                 <Text style={styles.eventText}>Opp Turn</Text>
                </TouchableOpacity>
-               <TouchableOpacity style={styles.eventBtn} onPress={() => recordEvent('callahan')}>
-                 <FontAwesome name="star" size={32} color="#fff" />
-                 <Text style={styles.eventText}>Callahan</Text>
-               </TouchableOpacity>
-               <TouchableOpacity style={[styles.eventBtn, { backgroundColor: '#e67e22' }]} onPress={() => recordEvent('opponent_score')}>
-                 <FontAwesome name="times-circle" size={32} color="#fff" />
+               <TouchableOpacity style={[styles.eventBtn, { backgroundColor: '#e67e22' }]} onPress={() => handleAction('opp_goal')}>
+                 <FontAwesome name="times-circle" size={28} color="#fff" />
                  <Text style={styles.eventText}>Opp Goal</Text>
                </TouchableOpacity>
              </>
           )}
 
+          {/* Always show Undo */}
           <TouchableOpacity style={[styles.eventBtn, styles.undoBtn]} onPress={undoLastEvent}>
-            <FontAwesome name="undo" size={32} color="#fff" />
+            <FontAwesome name="undo" size={28} color="#fff" />
             <Text style={styles.eventText}>Undo</Text>
           </TouchableOpacity>
         </View>
@@ -522,17 +544,22 @@ export default function PointTrackingScreen() {
         <Text style={styles.eventsTitle}>Events ({events.length})</Text>
         <ScrollView ref={scrollRef} style={styles.eventsScroll}>
           {events.length === 0 ? (
-             <Text style={styles.emptyEvents}>
-               {possession === 'our' ? "Ready for Offense" : "Waiting for Pull..."}
-             </Text>
+             <Text style={styles.emptyEvents}>Waiting for start...</Text>
           ) : (
             events.map((event, index) => {
               const thrower = roster.find(p => p.id === event.throwerId);
-              let desc = event.eventType.toUpperCase();
-              if (thrower) desc += ` (${getDisplayName(thrower, false)})`;
-              if (event.eventType === 'pull') desc = `PULL by ${thrower ? getDisplayName(thrower, false) : 'Us'} (Good)`;
-              if (event.eventType === 'pull_ob') desc = `PULL OB by ${thrower ? getDisplayName(thrower, false) : 'Us'}`;
+              const receiver = roster.find(p => p.id === event.receiverId);
+              const defender = roster.find(p => p.id === event.defenderId);
               
+              let desc = event.eventType.toUpperCase();
+              if (event.eventType === 'pass') desc = `${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
+              if (event.eventType === 'pickup') desc = `Pickup: ${getDisplayName(thrower, false)}`;
+              if (event.eventType === 'goal') desc = `GOAL: ${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
+              if (event.eventType === 'throwaway') desc = `Turn: ${getDisplayName(thrower, false)}`;
+              if (event.eventType === 'drop') desc = `Drop: ${getDisplayName(receiver, false)} (from ${getDisplayName(thrower, false)})`;
+              if (event.eventType === 'd') desc = `D: ${getDisplayName(defender, false)}`;
+              if (event.eventType === 'interception') desc = `Int: ${getDisplayName(defender, false)}`;
+
               return (
                 <Text key={event.id} style={styles.eventItem}>
                   {index + 1}. {desc}
@@ -566,14 +593,10 @@ export default function PointTrackingScreen() {
                   )}
                   
                   <View style={styles.countsContainer}>
-                      <Text style={[styles.countText, {
-                          color: isABBA ? (currentCounts.m === targetRatio.m ? '#3498db' : '#e74c3c') : '#3498db'
-                      }]}>
+                      <Text style={[styles.countText, {color: isABBA ? (currentCounts.m === targetRatio.m ? '#3498db' : '#e74c3c') : '#3498db'}]}>
                          {isABBA ? `Selected: ${currentCounts.m}M` : `${currentCounts.m} Men`}
                       </Text>
-                      <Text style={[styles.countText, {
-                          color: isABBA ? (currentCounts.f === targetRatio.f ? '#e91e63' : '#e74c3c') : '#e91e63'
-                      }]}>
+                      <Text style={[styles.countText, {color: isABBA ? (currentCounts.f === targetRatio.f ? '#e91e63' : '#e74c3c') : '#e91e63'}]}>
                          {isABBA ? `/ ${currentCounts.f}F` : `/ ${currentCounts.f} Women`}
                       </Text>
                   </View>
@@ -584,7 +607,6 @@ export default function PointTrackingScreen() {
             {roster.map((player) => {
               const inLineObj = line.find(lp => lp.id === player.id);
               const isSelected = !!inLineObj;
-              
               return (
               <TouchableOpacity
                 key={player.id}
@@ -598,9 +620,7 @@ export default function PointTrackingScreen() {
                         {player.gender === 'other' && <FontAwesome name="user" size={16} color={isSelected ? "#fff" : "#95a5a6"} />}
                     </View>
                 )}
-
                 <Text style={[styles.rosterPlayerName, isSelected && {color: '#fff'}]}>{getDisplayName(player, false)} #{player.number}</Text>
-                
                 {isSelected && (
                     <Text style={{color:'#fff', fontWeight:'bold', fontSize:12, marginTop:4}}>
                         Playing as: {inLineObj.role === 'male' ? 'MMP' : 'FMP'}
@@ -628,7 +648,7 @@ export default function PointTrackingScreen() {
                            {line.map(lp => {
                                const p = roster.find(r => r.id === lp.id);
                                return (
-                                   <TouchableOpacity key={lp.id} style={styles.pullPlayerBtn} onPress={() => handlePullSelection(lp.id)}>
+                                   <TouchableOpacity key={lp.id} style={styles.pullPlayerBtn} onPress={() => { setPullerId(lp.id); setPullStep('outcome'); }}>
                                        <Text style={styles.pullPlayerName}>{p ? getDisplayName(p, true) : '?'}</Text>
                                    </TouchableOpacity>
                                )
@@ -664,7 +684,9 @@ const styles = StyleSheet.create({
   lineTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50' },
   lineGrid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' },
   linePlayerButton: { backgroundColor: '#f0f0f0', width: '23%', aspectRatio: 1, margin: '1%', borderRadius: 16, justifyContent: 'center', alignItems: 'center', elevation: 3, position: 'relative' },
-  linePlayerSelected: { backgroundColor: '#27ae60' },
+  linePlayerSelected: { backgroundColor: '#27ae60' }, // Standard selected
+  holderButton: { backgroundColor: '#2ecc71', borderWidth: 2, borderColor: '#27ae60' }, // Highlight holder
+  holderText: { color: '#fff' },
   linePlayerName: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center' },
   linePlayerNumber: { fontSize: 12, color: '#7f8c8d', marginTop: 4 },
   linePlayerEmpty: { width: '23%', aspectRatio: 1, margin: '1%' },
@@ -672,7 +694,7 @@ const styles = StyleSheet.create({
   roleText: { fontSize: 10, fontWeight: 'bold', color: '#333' },
   eventGridSection: { flex: 0.37, justifyContent: 'center', backgroundColor: '#f8f9fa' },
   eventGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', paddingHorizontal: 10 },
-  eventBtn: { backgroundColor: '#27ae60', width: 90, height: 90, borderRadius: 16, justifyContent: 'center', alignItems: 'center', margin: 6, elevation: 4 },
+  eventBtn: { backgroundColor: '#34495e', width: 90, height: 90, borderRadius: 16, justifyContent: 'center', alignItems: 'center', margin: 6, elevation: 4 },
   undoBtn: { backgroundColor: '#e74c3c' },
   eventText: { color: '#fff', fontSize: 13, fontWeight: 'bold', marginTop: 4, textAlign: 'center' },
   eventsSection: { flex: 0.25, paddingHorizontal: 20, paddingTop: 10, backgroundColor: '#fff' },
@@ -681,6 +703,7 @@ const styles = StyleSheet.create({
   emptyEvents: { fontSize: 16, color: '#7f8c8d', textAlign: 'center', marginTop: 20 },
   eventItem: { fontSize: 16, color: '#34495e', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#eee' },
   loading: { fontSize: 18, textAlign: 'center', marginTop: 50, color: '#7f8c8d' },
+  
   modalContainer: { flex: 1, backgroundColor: '#f8f9fa', padding: 20, paddingTop: 60 },
   modalHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   modalTitle: { fontSize: 24, fontWeight: 'bold', color: '#2c3e50' },
