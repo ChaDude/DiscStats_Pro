@@ -42,7 +42,11 @@ type GameState = 'awaiting_pull' | 'receiving_pull' | 'defense' | 'awaiting_pick
 export default function PointTrackingScreen() {
   const { gameId, pointNumber } = useLocalSearchParams<{ gameId: string; pointNumber: string }>();
   const router = useRouter();
-  const pNum = parseInt(pointNumber, 10);
+  
+  // Safe parsing
+  const safeGameId = Array.isArray(gameId) ? gameId[0] : gameId;
+  const safePointNumber = Array.isArray(pointNumber) ? pointNumber[0] : pointNumber;
+  const pNum = parseInt(safePointNumber, 10);
 
   const [game, setGame] = useState<Game | null>(null);
   const [roster, setRoster] = useState<Player[]>([]);
@@ -66,7 +70,7 @@ export default function PointTrackingScreen() {
   const [subStep, setSubStep] = useState<'out' | 'in'>('out');
   const [subPlayerOut, setSubPlayerOut] = useState<Player | null>(null);
 
-  // Defensive Action Modal State (New)
+  // Defensive Action Modal State
   const [defensiveModalVisible, setDefensiveModalVisible] = useState(false);
   const [defensivePlayer, setDefensivePlayer] = useState<Player | null>(null);
 
@@ -104,7 +108,7 @@ export default function PointTrackingScreen() {
   const loadData = async () => {
     try {
       const db = await getDB();
-      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [gameId]);
+      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [safeGameId]);
       setGame(gameResult);
 
       if (gameResult?.teamId) {
@@ -126,14 +130,14 @@ export default function PointTrackingScreen() {
       } else {
         const prevPoint = await db.getFirstAsync<{ ourScoreAfter: number, opponentScoreAfter: number }>(
           'SELECT ourScoreAfter, opponentScoreAfter FROM points WHERE gameId = ? AND pointNumber = ?',
-          [gameId, pNum - 1]
+          [safeGameId, pNum - 1]
         );
         if (prevPoint) {
             initialOurScore = prevPoint.ourScoreAfter;
             initialOpponentScore = prevPoint.opponentScoreAfter;
             const lastEvent = await db.getFirstAsync<{ eventType: string }>(
                 'SELECT eventType FROM events WHERE pointId = (SELECT id FROM points WHERE gameId=? AND pointNumber=?) ORDER BY id DESC LIMIT 1',
-                [gameId, pNum - 1]
+                [safeGameId, pNum - 1]
             );
             weArePulling = (lastEvent?.eventType === 'goal' || lastEvent?.eventType === 'callahan');
         }
@@ -144,7 +148,7 @@ export default function PointTrackingScreen() {
       setOpponentScore(initialOpponentScore);
       setStartingOnOffense(!weArePulling);
 
-      // ABBA Logic
+      // --- ABBA Logic (Fixed: A, B, B, A, A, B, B...) ---
       const teamSize = gameResult?.teamSize || 7;
       let defaultM = Math.ceil(teamSize / 2);
       let defaultF = Math.floor(teamSize / 2);
@@ -155,13 +159,18 @@ export default function PointTrackingScreen() {
              isLocked = false;
          } else {
              isLocked = true;
-             const p1 = await db.getFirstAsync<{ genderRatio: string }>('SELECT genderRatio FROM points WHERE gameId = ? AND pointNumber = 1', [gameId]);
+             const p1 = await db.getFirstAsync<{ genderRatio: string }>('SELECT genderRatio FROM points WHERE gameId = ? AND pointNumber = 1', [safeGameId]);
              const p1Str = p1?.genderRatio || `${defaultM}m${defaultF}f`;
              const mMatch = p1Str.match(/(\d+)m/);
              const p1M = mMatch ? parseInt(mMatch[1]) : defaultM;
              
+             // P2 & P3 = Swap. P4 & P5 = Same.
+             // (2-2)/2 = 0 (Swap)
+             // (3-2)/2 = 0 (Swap)
+             // (4-2)/2 = 1 (Same)
              const cycle = Math.floor((pNum - 2) / 2) % 2; 
              const isSwap = cycle === 0; 
+             
              const p1MaleHeavy = p1M > (teamSize / 2);
              
              if (isSwap) {
@@ -179,7 +188,7 @@ export default function PointTrackingScreen() {
       // Load Point
       const pointResult = await db.getFirstAsync<{ id: number; linePlayers: string | null; startingOLine: number; genderRatio: string }>(
         'SELECT * FROM points WHERE gameId = ? AND pointNumber = ?',
-        [gameId, pointNumber]
+        [safeGameId, safePointNumber]
       );
 
       if (pointResult) {
@@ -195,6 +204,7 @@ export default function PointTrackingScreen() {
           }
         }
         
+        // Use saved ratio as target (this preserves target even if lineup drifts due to subs)
         if (gameResult?.genderRule === 'abba' && pointResult.genderRatio) {
             const mMatch = pointResult.genderRatio.match(/(\d+)m/);
             const fMatch = pointResult.genderRatio.match(/(\d+)f/);
@@ -203,7 +213,7 @@ export default function PointTrackingScreen() {
             }
         }
 
-        // --- Reconstruct Game State from Event Log ---
+        // --- Reconstruct Game State ---
         if (eventsResult.length === 0) {
             if (pointResult.startingOLine === 1) setGameState('receiving_pull'); 
             else setGameState('awaiting_pull');
@@ -235,7 +245,7 @@ export default function PointTrackingScreen() {
                 else if (e.eventType === 'thrown_callahan') { lastState = 'awaiting_pull'; holder = null; }
                 else if (e.eventType === 'correction') { holder = e.throwerId; } 
                 else if (e.eventType === 'injury_sub') { 
-                    if (holder === e.throwerId) holder = e.receiverId;
+                    if (holder === e.throwerId) holder = e.receiverId; 
                 }
             });
             setGameState(lastState);
@@ -267,7 +277,7 @@ export default function PointTrackingScreen() {
 
   const saveEvent = async (type: string, thrower: number|null, receiver: number|null, defender: number|null) => {
       const db = await getDB();
-      const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+      const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
       if (!pointRow) return;
 
       const t = (thrower ?? null) as number | null;
@@ -293,7 +303,7 @@ export default function PointTrackingScreen() {
   const recordCallahan = async (playerId: number) => {
       await saveEvent('callahan', null, null, playerId);
       const db = await getDB();
-      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
       if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore+1, opponentScore, pid]);
       router.back();
   };
@@ -303,7 +313,6 @@ export default function PointTrackingScreen() {
       await saveEvent(eventType, null, null, null);
   };
 
-  // --- Injury Sub Logic ---
   const handleInjurySubStart = () => {
       setSubStep('out');
       setSubPlayerOut(null);
@@ -315,25 +324,58 @@ export default function PointTrackingScreen() {
       setSubStep('in');
   };
 
+  const processSub = async (playerIn: Player, role: 'male' | 'female') => {
+      if (!subPlayerOut) return;
+
+      try {
+          const newLine = line.filter(lp => lp.id !== subPlayerOut.id);
+          newLine.push({ id: playerIn.id, role: role });
+
+          const db = await getDB();
+          const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
+          
+          if (pointRow) {
+              // We do NOT update genderRatio in DB, only linePlayers.
+              // This ensures the point retains its original Target Ratio for historical tracking.
+              await db.runAsync(
+                  'UPDATE points SET linePlayers = ? WHERE id = ?',
+                  [JSON.stringify(newLine), pointRow.id]
+              );
+              
+              await db.runAsync(
+                  'INSERT INTO events (pointId, eventType, throwerId, receiverId, defenderId, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+                  [pointRow.id, 'injury_sub', subPlayerOut.id, playerIn.id, null]
+              );
+          }
+
+          setLine(newLine);
+          setSubModalVisible(false);
+          await loadData(); 
+
+      } catch (e) {
+          console.error("Sub Error:", e);
+          Alert.alert("Error", "Failed to process substitution.");
+      }
+  };
+
   const confirmSub = async (playerIn: Player, role: 'male' | 'female') => {
       if (!subPlayerOut) return;
 
-      const newLine = line.filter(lp => lp.id !== subPlayerOut.id);
-      newLine.push({ id: playerIn.id, role: role });
+      const playerOutLineObj = line.find(lp => lp.id === subPlayerOut.id);
+      const roleOut = playerOutLineObj?.role;
 
-      const db = await getDB();
-      const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
-      if (pointRow) {
-          await db.runAsync(
-              'UPDATE points SET linePlayers = ? WHERE id = ?',
-              [JSON.stringify(newLine), pointRow.id]
+      if (game?.genderRule !== 'none' && roleOut && roleOut !== role) {
+          Alert.alert(
+              'Ratio Mismatch',
+              `You are substituting a ${role.toUpperCase()} for a ${roleOut.toUpperCase()}. This changes the on-field gender ratio. Continue?`,
+              [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Confirm', style: 'destructive', onPress: () => processSub(playerIn, role) }
+              ]
           );
+      } else {
+          processSub(playerIn, role);
       }
-
-      await saveEvent('injury_sub', subPlayerOut.id, playerIn.id, null);
-
-      setLine(newLine);
-      setSubModalVisible(false);
   };
 
   const handleSubSelectIn = (playerIn: Player) => {
@@ -354,8 +396,6 @@ export default function PointTrackingScreen() {
       }
   };
 
-  // --- Interactions ---
-
   const handleGridTap = (player: Player) => {
       if (gameState === 'offense') {
           if (currentHolderId === player.id) {
@@ -372,7 +412,6 @@ export default function PointTrackingScreen() {
           saveEvent('pass', currentHolderId, player.id, null);
       } 
       else if (gameState === 'defense') {
-          // OPEN DEFENSIVE MODAL instead of Alert (Android fix)
           setDefensivePlayer(player);
           setDefensiveModalVisible(true);
       }
@@ -428,7 +467,7 @@ export default function PointTrackingScreen() {
                   { text: "Confirm", onPress: async () => {
                       await updateLastEvent('goal');
                       const db = await getDB();
-                      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+                      const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
                       if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore+1, opponentScore, pid]);
                       router.back();
                   }},
@@ -443,7 +482,7 @@ export default function PointTrackingScreen() {
               { text: "Confirm", onPress: async () => {
                   await saveEvent('thrown_callahan', currentHolderId, null, null);
                   const db = await getDB();
-                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
                   if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore, opponentScore+1, pid]);
                   router.back();
               }},
@@ -458,7 +497,7 @@ export default function PointTrackingScreen() {
               { text: 'Confirm', onPress: async () => {
                   await saveEvent('opp_goal', null, null, null);
                   const db = await getDB();
-                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [gameId, pointNumber]))?.id;
+                  const pid = (await db.getFirstAsync<{id:number}>('SELECT id FROM points WHERE gameId=? AND pointNumber=?', [safeGameId, safePointNumber]))?.id;
                   if(pid) await db.runAsync('UPDATE points SET ourScoreAfter=?, opponentScoreAfter=? WHERE id=?', [ourScore, opponentScore+1, pid]);
                   router.back();
               }},
@@ -494,16 +533,16 @@ export default function PointTrackingScreen() {
 
   const persistLine = async (newLine: LinePlayer[]) => {
     const db = await getDB();
-    const pointRow = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+    const pointRow = await db.getFirstAsync('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
     let m = 0, f = 0; newLine.forEach(lp => lp.role === 'male' ? m++ : f++);
     const calculatedRatio = `${m}m${f}f`;
     
     const startO = startingOnOffense ? 1 : 0;
 
     if (!pointRow) {
-      await db.runAsync('INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers, genderRatio) VALUES (?, ?, ?, ?, ?, ?, ?)', [gameId, pointNumber, startOurScore, startOpponentScore, startO, JSON.stringify(newLine), calculatedRatio]);
+      await db.runAsync('INSERT INTO points (gameId, pointNumber, ourScoreAfter, opponentScoreAfter, startingOLine, linePlayers, genderRatio) VALUES (?, ?, ?, ?, ?, ?, ?)', [safeGameId, safePointNumber, startOurScore, startOpponentScore, startO, JSON.stringify(newLine), calculatedRatio]);
     } else {
-      await db.runAsync('UPDATE points SET linePlayers = ?, genderRatio = ? WHERE gameId = ? AND pointNumber = ?', [JSON.stringify(newLine), calculatedRatio, gameId, pointNumber]);
+      await db.runAsync('UPDATE points SET linePlayers = ?, genderRatio = ? WHERE gameId = ? AND pointNumber = ?', [JSON.stringify(newLine), calculatedRatio, safeGameId, safePointNumber]);
     }
     setLine(newLine);
     setLineModalVisible(false);
@@ -512,7 +551,7 @@ export default function PointTrackingScreen() {
   const recordPull = async (outcome: 'good' | 'ob') => {
       try {
         const db = await getDB();
-        const pointResult = await db.getFirstAsync<{ id: number }>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+        const pointResult = await db.getFirstAsync<{ id: number }>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [safeGameId, safePointNumber]);
         if (!pointResult) return; 
         const eventType = outcome === 'ob' ? 'pull_ob' : 'pull';
         
@@ -582,10 +621,22 @@ export default function PointTrackingScreen() {
       <View style={styles.header}>
         <Text style={styles.pointTitle} numberOfLines={1} adjustsFontSizeToFit>Point {pointNumber}</Text>
         <Text style={styles.scoreText} numberOfLines={1} adjustsFontSizeToFit>{game?.teamName} {ourScore} - {opponentScore} {game?.opponentName}</Text>
+        {game?.genderRule !== 'none' && (
+            <Text style={styles.targetText}>Target: {targetRatio.m}M / {targetRatio.f}F</Text>
+        )}
         <Text style={styles.possessionText} numberOfLines={1} adjustsFontSizeToFit>
             {getHeaderStatus()}
         </Text>
       </View>
+
+      {game?.genderRule !== 'none' && !isRatioCorrect && (
+          <View style={styles.ratioWarningContainer}>
+              <FontAwesome name="exclamation-triangle" size={16} color="#d35400" />
+              <Text style={styles.ratioWarningText}>
+                  Ratio Mismatch: {currentCounts.m}M/{currentCounts.f}F (Target: {targetRatio.m}M/{targetRatio.f}F)
+              </Text>
+          </View>
+      )}
 
       <View style={styles.lineGridSection}>
         <View style={styles.lineHeader}>
@@ -763,10 +814,10 @@ export default function PointTrackingScreen() {
                   )}
                   
                   <View style={styles.countsContainer}>
-                      <Text style={[styles.countText, {color: isABBA ? (currentCounts.m === targetRatio.m ? '#3498db' : '#e74c3c') : '#3498db'}]}>
+                      <Text style={[styles.countText, {color: isABBA ? (currentCounts.m === targetRatio.m ? '#3498db' : '#e67e22') : '#3498db'}]}>
                          {isABBA ? `Selected: ${currentCounts.m}M` : `${currentCounts.m} Men`}
                       </Text>
-                      <Text style={[styles.countText, {color: isABBA ? (currentCounts.f === targetRatio.f ? '#e91e63' : '#e74c3c') : '#e91e63'}]}>
+                      <Text style={[styles.countText, {color: isABBA ? (currentCounts.f === targetRatio.f ? '#e91e63' : '#e67e22') : '#e91e63'}]}>
                          {isABBA ? `/ ${currentCounts.f}F` : `/ ${currentCounts.f} Women`}
                       </Text>
                   </View>
@@ -927,6 +978,7 @@ const styles = StyleSheet.create({
   header: { paddingVertical: 8, paddingHorizontal: 20, backgroundColor: '#fff', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#ddd', height: 100, justifyContent: 'center' },
   pointTitle: { fontSize: 20, fontWeight: 'bold', color: '#2c3e50' },
   scoreText: { fontSize: 24, fontWeight: 'bold', color: '#27ae60', marginVertical: 4 },
+  targetText: { fontSize: 14, color: '#34495e', fontWeight: 'bold', marginBottom: 4 },
   possessionText: { fontSize: 16, color: '#27ae60', fontWeight: '600' },
   lineGridSection: { flex: 0.38, padding: 15, backgroundColor: '#fff' },
   lineHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
@@ -935,6 +987,7 @@ const styles = StyleSheet.create({
   linePlayerButton: { backgroundColor: '#f0f0f0', width: '23%', aspectRatio: 1, margin: '1%', borderRadius: 16, justifyContent: 'center', alignItems: 'center', elevation: 3, position: 'relative' },
   linePlayerSelected: { backgroundColor: '#27ae60' }, // Standard selected
   holderButton: { backgroundColor: '#2ecc71', borderWidth: 2, borderColor: '#27ae60' }, // Highlight holder
+  targetButton: { backgroundColor: '#f1c40f', borderWidth: 2, borderColor: '#f39c12' }, // Highlight potential receivers/scorers
   holderText: { color: '#fff' },
   linePlayerName: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center' },
   linePlayerNumber: { fontSize: 12, color: '#7f8c8d', marginTop: 4 },
@@ -978,5 +1031,20 @@ const styles = StyleSheet.create({
   ratioLabel: { fontSize: 16, color: '#2c3e50' },
   countsContainer: { flexDirection: 'row', justifyContent: 'space-around', width: '100%' },
   countText: { fontWeight: 'bold', fontSize: 18 },
-  genderIconBadge: { position: 'absolute', top: 6, right: 6 }
+  genderIconBadge: { position: 'absolute', top: 6, right: 6 },
+  
+  ratioWarningContainer: {
+      backgroundColor: '#f39c12',
+      paddingVertical: 8,
+      paddingHorizontal: 15,
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+      gap: 8,
+  },
+  ratioWarningText: {
+      color: '#fff',
+      fontWeight: 'bold',
+      fontSize: 14,
+  }
 });

@@ -1,5 +1,5 @@
-import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { useLocalSearchParams, useRouter, useFocusEffect, Stack } from 'expo-router';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIndicator } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useState, useCallback } from 'react';
 import { getDB } from '../../database/db';
@@ -7,10 +7,11 @@ import { getDB } from '../../database/db';
 type Game = {
   id: number;
   name: string;
+  date: string;
   teamName: string;
   opponentName: string;
   teamSize: number;
-  genderRule: string; // 'none', 'abba', 'offense', 'endzone'
+  genderRule: string;
 };
 
 type Point = {
@@ -18,42 +19,36 @@ type Point = {
   pointNumber: number;
   ourScoreAfter: number;
   opponentScoreAfter: number;
-  startingOLine: boolean; // Did we start on O?
-  genderRatio: string | null;
-  eventsCount: number;
+  genderRatio: string;
+  linePlayers: string; // JSON string
 };
 
-export default function GameDetailScreen() {
+export default function GameDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-
+  
   const [game, setGame] = useState<Game | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [loading, setLoading] = useState(true);
-  const [p1Ratio, setP1Ratio] = useState<string | null>(null);
+
+  const safeId = Array.isArray(id) ? id[0] : id;
 
   const loadData = async () => {
     try {
       const db = await getDB();
-      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [id]);
+      const gameResult = await db.getFirstAsync<Game>('SELECT * FROM games WHERE id = ?', [safeId]);
       setGame(gameResult);
 
-      const pointsResult = await db.getAllAsync<Point>(
-        `SELECT p.*, (SELECT COUNT(*) FROM events WHERE pointId = p.id) as eventsCount 
-         FROM points p 
-         WHERE gameId = ? 
-         ORDER BY pointNumber DESC`,
-        [id]
-      );
-      setPoints(pointsResult);
-
-      // Get Point 1 ratio for ABBA check
-      const p1 = pointsResult.find(p => p.pointNumber === 1);
-      setP1Ratio(p1?.genderRatio || null);
-
+      if (gameResult) {
+        const pointsResult = await db.getAllAsync<Point>(
+          'SELECT * FROM points WHERE gameId = ? ORDER BY pointNumber DESC',
+          [safeId]
+        );
+        setPoints(pointsResult);
+      }
     } catch (error) {
       console.error(error);
-      Alert.alert('Error', 'Failed to load game.');
+      Alert.alert('Error', 'Failed to load game details.');
     } finally {
       setLoading(false);
     }
@@ -62,121 +57,159 @@ export default function GameDetailScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [id])
+    }, [safeId])
   );
 
-  const getAbbaStatus = (point: Point) => {
-      if (!game || game.genderRule !== 'abba' || !p1Ratio || !point.genderRatio) return null;
-      
-      const p1M = parseInt(p1Ratio.match(/(\d+)m/)?.[1] || '4');
-      const teamSize = game.teamSize || 7;
-      const isP1MaleHeavy = p1M > (teamSize/2);
+  const handleStartPoint = () => {
+    if (!game) return;
+    const nextPointNum = points.length > 0 ? points[0].pointNumber + 1 : 1;
+    router.push(`/point/${game.id}/${nextPointNum}`);
+  };
 
-      const cycle = Math.floor((point.pointNumber - 2) / 2) % 2; 
-      const isSwap = cycle === 0; // 2,3,6,7 are swaps
+  // Helper to detect if Actual Line != Target Ratio
+  const getRatioMismatch = (point: Point) => {
+      if (game?.genderRule === 'none') return null;
+      if (!point.linePlayers || !point.genderRatio) return null;
 
-      const expectedMaleHeavy = isSwap ? !isP1MaleHeavy : isP1MaleHeavy;
+      // 1. Parse Target from string (e.g., "4m3f")
+      const mMatch = point.genderRatio.match(/(\d+)m/);
+      const fMatch = point.genderRatio.match(/(\d+)f/);
+      const targetM = mMatch ? parseInt(mMatch[1]) : 0;
+      const targetF = fMatch ? parseInt(fMatch[1]) : 0;
 
-      // Current Point Status
-      const currentM = parseInt(point.genderRatio.match(/(\d+)m/)?.[1] || '0');
-      const currentMaleHeavy = currentM > (teamSize/2);
+      // 2. Parse Actual from Line JSON
+      try {
+          const line = JSON.parse(point.linePlayers);
+          let actualM = 0;
+          let actualF = 0;
+          // Calculate counts based on the role saved in the line
+          // @ts-ignore
+          line.forEach(p => p.role === 'male' ? actualM++ : actualF++);
 
-      if (currentMaleHeavy !== expectedMaleHeavy) {
-          return { mismatch: true, expected: expectedMaleHeavy ? 'Male Heavy' : 'Female Heavy' };
+          // 3. Compare
+          if (actualM !== targetM || actualF !== targetF) {
+              return `Ratio Mismatch: Played ${actualM}M/${actualF}F`;
+          }
+      } catch (e) {
+          return null; 
       }
-      return { mismatch: false };
+      return null;
   };
 
-  const renderPoint = ({ item }: { item: Point }) => {
-    const abbaStatus = getAbbaStatus(item);
-    
+  if (loading) {
     return (
-      <TouchableOpacity 
-        style={styles.pointCard}
-        onPress={() => router.push(`/point/${game!.id}/${item.pointNumber}`)}
-      >
-        <View style={styles.pointHeader}>
-          <Text style={styles.pointTitle}>Point {item.pointNumber}</Text>
-          <View style={[styles.scoreBadge, item.ourScoreAfter > item.opponentScoreAfter ? styles.winning : styles.losing]}>
-            <Text style={styles.scoreText}>
-              {item.ourScoreAfter} - {item.opponentScoreAfter}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.pointDetails}>
-          <Text style={styles.detailText}>
-            Start on {item.startingOLine ? 'Offense' : 'Defense'}
-          </Text>
-          <Text style={styles.detailText}>• {item.eventsCount} Events</Text>
-          
-          {/* Gender Ratio Badge */}
-          {item.genderRatio && (
-              <View style={[styles.ratioBadge, abbaStatus?.mismatch && styles.ratioMismatch]}>
-                  <Text style={[styles.ratioText, abbaStatus?.mismatch && styles.ratioMismatchText]}>
-                      {item.genderRatio}
-                      {abbaStatus?.mismatch && " ⚠️"}
-                  </Text>
-              </View>
-          )}
-        </View>
-      </TouchableOpacity>
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#27ae60" />
+      </View>
     );
-  };
+  }
 
-  if (loading) return <ActivityIndicator size="large" color="#27ae60" style={{marginTop: 50}} />;
-  if (!game) return <Text>Game not found.</Text>;
+  if (!game) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>Game not found.</Text>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <Text style={styles.backBtnText}>Go Back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-        <View style={styles.header}>
-            <Text style={styles.gameTitle}>{game.name}</Text>
-            <Text style={styles.subtitle}>
-                {game.teamName} vs {game.opponentName}
-            </Text>
-        </View>
+      <Stack.Screen options={{ title: game.name }} />
+      
+      <View style={styles.headerCard}>
+        <Text style={styles.scoreTitle}>
+          {game.teamName} vs {game.opponentName}
+        </Text>
+        <Text style={styles.scoreMain}>
+          {points.length > 0 ? points[0].ourScoreAfter : 0} - {points.length > 0 ? points[0].opponentScoreAfter : 0}
+        </Text>
+        <TouchableOpacity style={styles.startBtn} onPress={handleStartPoint}>
+          <FontAwesome name="play" size={20} color="#fff" style={{ marginRight: 10 }} />
+          <Text style={styles.startBtnText}>Start Point {points.length + 1}</Text>
+        </TouchableOpacity>
+      </View>
 
-        <FlatList
-            data={points}
-            keyExtractor={(item) => item.id.toString()}
-            renderItem={renderPoint}
-            contentContainerStyle={styles.list}
-            ListHeaderComponent={
-                <TouchableOpacity 
-                    style={styles.nextPointBtn}
-                    onPress={() => {
-                        const nextPoint = points.length > 0 ? points[0].pointNumber + 1 : 1;
-                        router.push(`/point/${game.id}/${nextPoint}`);
-                    }}
-                >
-                    <Text style={styles.nextPointText}>Start Point {points.length > 0 ? points[0].pointNumber + 1 : 1}</Text>
-                    <FontAwesome name="arrow-right" size={20} color="#fff" />
-                </TouchableOpacity>
-            }
-        />
+      <ScrollView style={styles.pointsList}>
+        <Text style={styles.historyTitle}>Point History</Text>
+        {points.map((point) => {
+            const mismatch = getRatioMismatch(point);
+            return (
+              <TouchableOpacity
+                key={point.id}
+                style={styles.pointCard}
+                onPress={() => router.push(`/point/${game.id}/${point.pointNumber}`)}
+              >
+                <View style={styles.pointRow}>
+                  <View style={styles.pointInfo}>
+                    <Text style={styles.pointNum}>Point {point.pointNumber}</Text>
+                    <Text style={styles.pointRatio}>Target Ratio: {point.genderRatio}</Text>
+                    
+                    {/* Render Warning if Mismatch Detected */}
+                    {mismatch && (
+                        <View style={styles.warningTag}>
+                            <FontAwesome name="exclamation-triangle" size={12} color="#d35400" />
+                            <Text style={styles.warningText}>{mismatch}</Text>
+                        </View>
+                    )}
+                  </View>
+                  <View style={styles.pointScore}>
+                    <Text style={styles.scoreText}>
+                      {point.ourScoreAfter} - {point.opponentScoreAfter}
+                    </Text>
+                  </View>
+                  <FontAwesome name="chevron-right" size={16} color="#bdc3c7" />
+                </View>
+              </TouchableOpacity>
+            );
+        })}
+        {points.length === 0 && (
+            <Text style={styles.noPoints}>No points recorded yet.</Text>
+        )}
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8f9fa' },
-  header: { padding: 20, paddingTop: 60, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#ddd' },
-  gameTitle: { fontSize: 24, fontWeight: 'bold', color: '#2c3e50' },
-  subtitle: { fontSize: 18, color: '#7f8c8d', marginTop: 4 },
-  list: { padding: 20 },
-  nextPointBtn: { backgroundColor: '#27ae60', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 20, elevation: 4 },
-  nextPointText: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginRight: 10 },
-  pointCard: { backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 12, elevation: 2 },
-  pointHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  pointTitle: { fontSize: 18, fontWeight: 'bold', color: '#2c3e50' },
-  scoreBadge: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, backgroundColor: '#95a5a6' },
-  winning: { backgroundColor: '#27ae60' },
-  losing: { backgroundColor: '#e74c3c' },
-  scoreText: { color: '#fff', fontWeight: 'bold' },
-  pointDetails: { flexDirection: 'row', alignItems: 'center' },
-  detailText: { color: '#7f8c8d', marginRight: 10 },
-  ratioBadge: { backgroundColor: '#ecf0f1', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginLeft: 'auto' },
-  ratioText: { fontSize: 12, fontWeight: 'bold', color: '#7f8c8d' },
-  ratioMismatch: { backgroundColor: '#f1c40f' },
-  ratioMismatchText: { color: '#fff' }
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  errorText: { fontSize: 18, color: '#e74c3c', marginBottom: 20 },
+  backBtn: { padding: 10, backgroundColor: '#34495e', borderRadius: 8 },
+  backBtnText: { color: '#fff', fontWeight: 'bold' },
+  headerCard: { backgroundColor: '#fff', padding: 20, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#eee', elevation: 4 },
+  scoreTitle: { fontSize: 20, fontWeight: 'bold', color: '#2c3e50' },
+  scoreMain: { fontSize: 48, fontWeight: 'bold', color: '#27ae60', marginVertical: 10 },
+  startBtn: { flexDirection: 'row', backgroundColor: '#27ae60', paddingHorizontal: 30, paddingVertical: 15, borderRadius: 30, alignItems: 'center', marginTop: 10, elevation: 4 },
+  startBtnText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  pointsList: { flex: 1, padding: 15 },
+  historyTitle: { fontSize: 18, fontWeight: 'bold', color: '#7f8c8d', marginBottom: 10, marginLeft: 5 },
+  pointCard: { backgroundColor: '#fff', borderRadius: 12, padding: 15, marginBottom: 10, elevation: 2 },
+  pointRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  pointInfo: { flex: 1 },
+  pointNum: { fontSize: 16, fontWeight: 'bold', color: '#2c3e50' },
+  pointRatio: { fontSize: 14, color: '#7f8c8d', marginTop: 2 },
+  pointScore: { paddingHorizontal: 15 },
+  scoreText: { fontSize: 20, fontWeight: 'bold', color: '#2c3e50' },
+  noPoints: { textAlign: 'center', marginTop: 30, color: '#bdc3c7', fontSize: 16 },
+  
+  // NEW STYLES
+  warningTag: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: '#fdebd0', // Light Orange bg
+      alignSelf: 'flex-start',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 4,
+      marginTop: 6,
+      gap: 6
+  },
+  warningText: {
+      color: '#d35400',
+      fontSize: 12,
+      fontWeight: 'bold'
+  }
 });
