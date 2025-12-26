@@ -22,7 +22,8 @@ export default function GamesScreen() {
   const loadGames = async () => {
     try {
       const db = await getDB();
-      const result = await db.getAllAsync<Game>('SELECT * FROM games ORDER BY date DESC');
+      // FIX: Pass empty array [] as second argument to prevent Android NullPointerException
+      const result = await db.getAllAsync<Game>('SELECT * FROM games ORDER BY date DESC', []);
       setGames(result);
     } catch (error) {
       console.error('Error loading games:', error);
@@ -51,7 +52,8 @@ export default function GamesScreen() {
           onPress: async () => {
             try {
               const db = await getDB();
-              await db.runAsync('DELETE FROM games WHERE id = ?', id);
+              // FIX: Wrap id in array [id]
+              await db.runAsync('DELETE FROM games WHERE id = ?', [id]);
               loadGames(); // Refresh list immediately
             } catch (error) {
               Alert.alert('Error', 'Failed to delete game.');
