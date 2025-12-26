@@ -61,6 +61,15 @@ export default function PointTrackingScreen() {
   const [pullerId, setPullerId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Sub Modal State
+  const [subModalVisible, setSubModalVisible] = useState(false);
+  const [subStep, setSubStep] = useState<'out' | 'in'>('out');
+  const [subPlayerOut, setSubPlayerOut] = useState<Player | null>(null);
+
+  // Defensive Action Modal State (New)
+  const [defensiveModalVisible, setDefensiveModalVisible] = useState(false);
+  const [defensivePlayer, setDefensivePlayer] = useState<Player | null>(null);
+
   // Metadata State
   const [targetRatio, setTargetRatio] = useState<{m: number, f: number}>({m: 4, f: 3});
   const [ratioLocked, setRatioLocked] = useState(false); 
@@ -207,7 +216,10 @@ export default function PointTrackingScreen() {
                     if (pointResult.startingOLine === 1) lastState = 'awaiting_pickup';
                     else lastState = 'defense';
                 }
-                else if (e.eventType === 'pull_ob') lastState = 'awaiting_pickup';
+                else if (e.eventType === 'pull_ob') {
+                    if (pointResult.startingOLine === 1) lastState = 'awaiting_pickup';
+                    else lastState = 'defense';
+                }
                 else if (e.eventType === 'pickup') { lastState = 'offense'; holder = e.throwerId; }
                 else if (e.eventType === 'pass') { lastState = 'offense'; holder = e.receiverId; }
                 else if (e.eventType === 'drop') { lastState = 'defense'; holder = null; }
@@ -221,6 +233,10 @@ export default function PointTrackingScreen() {
                 else if (e.eventType === 'opp_goal') { lastState = 'awaiting_pull'; holder = null; }
                 else if (e.eventType === 'dropped_pull') { lastState = 'defense'; holder = null; }
                 else if (e.eventType === 'thrown_callahan') { lastState = 'awaiting_pull'; holder = null; }
+                else if (e.eventType === 'correction') { holder = e.throwerId; } 
+                else if (e.eventType === 'injury_sub') { 
+                    if (holder === e.throwerId) holder = e.receiverId;
+                }
             });
             setGameState(lastState);
             setCurrentHolderId(holder);
@@ -287,31 +303,103 @@ export default function PointTrackingScreen() {
       await saveEvent(eventType, null, null, null);
   };
 
-  const handleGridTap = (player: Player) => {
-      if (gameState === 'offense') {
-          if (currentHolderId === player.id) return; 
-          saveEvent('pass', currentHolderId, player.id, null);
-      } 
-      else if (gameState === 'defense') {
+  // --- Injury Sub Logic ---
+  const handleInjurySubStart = () => {
+      setSubStep('out');
+      setSubPlayerOut(null);
+      setSubModalVisible(true);
+  };
+
+  const handleSubSelectOut = (player: Player) => {
+      setSubPlayerOut(player);
+      setSubStep('in');
+  };
+
+  const confirmSub = async (playerIn: Player, role: 'male' | 'female') => {
+      if (!subPlayerOut) return;
+
+      const newLine = line.filter(lp => lp.id !== subPlayerOut.id);
+      newLine.push({ id: playerIn.id, role: role });
+
+      const db = await getDB();
+      const pointRow = await db.getFirstAsync<{id: number}>('SELECT id FROM points WHERE gameId = ? AND pointNumber = ?', [gameId, pointNumber]);
+      if (pointRow) {
+          await db.runAsync(
+              'UPDATE points SET linePlayers = ? WHERE id = ?',
+              [JSON.stringify(newLine), pointRow.id]
+          );
+      }
+
+      await saveEvent('injury_sub', subPlayerOut.id, playerIn.id, null);
+
+      setLine(newLine);
+      setSubModalVisible(false);
+  };
+
+  const handleSubSelectIn = (playerIn: Player) => {
+      if (!subPlayerOut) return;
+
+      if (playerIn.gender === 'other') {
           Alert.alert(
-              `Defensive Play: ${getDisplayName(player, true)}`,
-              'Select action:',
+              'Select Matchup Role',
+              `Is ${playerIn.firstName} playing as MMP or FMP?`,
               [
-                  { text: 'Block (Knockdown)', onPress: () => saveEvent('d', null, null, player.id) },
-                  { text: 'Interception', onPress: () => {
-                      const run = async () => { await saveEvent('interception', null, null, player.id); };
-                      run();
-                  }},
-                  { text: 'Callahan (Goal)', onPress: () => {
-                      const run = async () => { await recordCallahan(player.id); };
-                      run();
-                  }},
+                  { text: 'MMP (Male)', onPress: () => confirmSub(playerIn, 'male') },
+                  { text: 'FMP (Female)', onPress: () => confirmSub(playerIn, 'female') },
                   { text: 'Cancel', style: 'cancel' }
               ]
           );
+      } else {
+          confirmSub(playerIn, playerIn.gender as 'male' | 'female');
+      }
+  };
+
+  // --- Interactions ---
+
+  const handleGridTap = (player: Player) => {
+      if (gameState === 'offense') {
+          if (currentHolderId === player.id) {
+              Alert.alert(
+                  "Self-Catch / Greatest?",
+                  `Did ${player.firstName} catch their own throw?`,
+                  [
+                      { text: "Cancel", style: "cancel" },
+                      { text: "Yes", onPress: () => saveEvent('pass', currentHolderId, player.id, null) }
+                  ]
+              );
+              return; 
+          }
+          saveEvent('pass', currentHolderId, player.id, null);
+      } 
+      else if (gameState === 'defense') {
+          // OPEN DEFENSIVE MODAL instead of Alert (Android fix)
+          setDefensivePlayer(player);
+          setDefensiveModalVisible(true);
       }
       else if (gameState === 'awaiting_pickup' || gameState === 'receiving_pull') {
           saveEvent('pickup', player.id, null, null);
+      }
+  };
+
+  const handleGridLongPress = (player: Player) => {
+      if (gameState === 'offense' && currentHolderId !== player.id) {
+          Alert.alert(
+              "Correction: Set Disc Holder",
+              `Set ${player.firstName} as current thrower? (Does not record a pass)`,
+              [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Set Holder", onPress: () => saveEvent('correction', player.id, null, null) }
+              ]
+          );
+      }
+  };
+
+  const handleEventTap = (event: Event, index: number) => {
+      if (index === events.length - 1) {
+          Alert.alert('Undo Event?', `Delete "${event.eventType.toUpperCase()}"?`, [
+              { text: "Cancel", style: "cancel" },
+              { text: "Delete", style: "destructive", onPress: undoLastEvent }
+          ]);
       }
   };
 
@@ -324,10 +412,10 @@ export default function PointTrackingScreen() {
       }
       else if (action === 'drop') {
           const last = events[events.length - 1];
-          if (last && last.eventType === 'pass') {
+          if (last && (last.eventType === 'pass' || last.eventType === 'pickup')) {
               updateLastEvent('drop');
           } else {
-              Alert.alert("Error", "Can only record a drop immediately after a pass.");
+              Alert.alert("Error", "Can only record a drop after a pass or pickup.");
           }
       }
       else if (action === 'dropped_pull') {
@@ -502,9 +590,14 @@ export default function PointTrackingScreen() {
       <View style={styles.lineGridSection}>
         <View style={styles.lineHeader}>
           <Text style={styles.lineTitle}>Line ({line.length}/{game?.teamSize})</Text>
-          <TouchableOpacity onPress={() => setLineModalVisible(true)}>
-            <FontAwesome name="edit" size={20} color="#27ae60" />
-          </TouchableOpacity>
+          <View style={{flexDirection: 'row', gap: 15}}>
+              <TouchableOpacity onPress={handleInjurySubStart}>
+                <FontAwesome name="exchange" size={20} color="#e67e22" />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setLineModalVisible(true)}>
+                <FontAwesome name="edit" size={20} color="#27ae60" />
+              </TouchableOpacity>
+          </View>
         </View>
         <View style={styles.lineGrid}>
           {Array.from({ length: 8 }).map((_, index) => {
@@ -523,6 +616,7 @@ export default function PointTrackingScreen() {
                     isHolder && styles.holderButton,
                 ]}
                 onPress={() => handleGridTap(player)}
+                onLongPress={() => handleGridLongPress(player)}
               >
                 <Text style={[styles.linePlayerName, isHolder && styles.holderText]}>
                   {getDisplayName(player, true)}
@@ -549,7 +643,7 @@ export default function PointTrackingScreen() {
                </TouchableOpacity>
                <TouchableOpacity style={styles.eventBtn} onPress={() => handleAction('throwaway')}>
                  <FontAwesome name="exclamation-triangle" size={28} color="#fff" />
-                 <Text style={styles.eventText}>Turn</Text>
+                 <Text style={styles.eventText}>Throwaway</Text>
                </TouchableOpacity>
                {canDropPull ? (
                    <TouchableOpacity style={[styles.eventBtn, {backgroundColor: '#c0392b'}]} onPress={() => handleAction('dropped_pull')}>
@@ -623,18 +717,23 @@ export default function PointTrackingScreen() {
               if (event.eventType === 'pull') desc = thrower ? `Pull: ${getDisplayName(thrower, false)}` : `Opponent Pull (Good)`;
               if (event.eventType === 'pull_ob') desc = thrower ? `Pull OB: ${getDisplayName(thrower, false)}` : `Opponent Pull (OB)`;
               if (event.eventType === 'goal') desc = `GOAL: ${getDisplayName(thrower, false)} → ${getDisplayName(receiver, false)}`;
-              if (event.eventType === 'throwaway') desc = `Turn: ${getDisplayName(thrower, false)}`;
+              if (event.eventType === 'throwaway') desc = `Throwaway: ${getDisplayName(thrower, false)}`;
               if (event.eventType === 'drop') desc = `Drop: ${getDisplayName(receiver, false)} (from ${getDisplayName(thrower, false)})`;
               if (event.eventType === 'dropped_pull') desc = `Dropped Pull: ${getDisplayName(thrower, false)}`;
               if (event.eventType === 'd') desc = `D: ${getDisplayName(defender, false)}`;
               if (event.eventType === 'interception') desc = `Int: ${getDisplayName(defender, false)}`;
               if (event.eventType === 'callahan' && defender) desc = `Callahan: ${getDisplayName(defender, false)} (Goal + D)`;
               if (event.eventType === 'thrown_callahan') desc = `Thrown Callahan (Goal for Opponent)`;
+              if (event.eventType === 'injury_sub') desc = `Sub: ${getDisplayName(thrower, false)} OUT, ${getDisplayName(receiver, false)} IN`;
+              if (event.eventType === 'correction') desc = `Correction: Disc set to ${getDisplayName(thrower, false)}`;
+              if (event.eventType === 'stall') desc = `Stall: ${getDisplayName(thrower, false)}`;
 
               return (
-                <Text key={event.id} style={styles.eventItem}>
-                  {index + 1}. {desc}
-                </Text>
+                <TouchableOpacity key={event.id} onPress={() => handleEventTap(event, index)}>
+                    <Text style={styles.eventItem}>
+                        {index + 1}. {desc}
+                    </Text>
+                </TouchableOpacity>
               );
             })
           )}
@@ -740,6 +839,85 @@ export default function PointTrackingScreen() {
            </View>
         </View>
       </Modal>
+
+      <Modal visible={subModalVisible} animationType="slide">
+        <View style={styles.modalContainer}>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalTitle}>
+                  {subStep === 'out' ? "Select Player Leaving" : "Select Replacement"}
+              </Text>
+              <TouchableOpacity onPress={() => setSubModalVisible(false)} style={styles.closeModalBtn}>
+                  <FontAwesome name="times" size={24} color="#7f8c8d" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.rosterGrid}>
+                {subStep === 'out' ? (
+                    // Show ONLY Line Players
+                    line.map(lp => {
+                        const p = roster.find(r => r.id === lp.id);
+                        if (!p) return null;
+                        return (
+                            <TouchableOpacity key={p.id} style={styles.rosterPlayer} onPress={() => handleSubSelectOut(p)}>
+                                <Text style={styles.rosterPlayerName}>{getDisplayName(p, false)}</Text>
+                            </TouchableOpacity>
+                        )
+                    })
+                ) : (
+                    // Show ONLY Roster Players NOT in line
+                    roster.filter(p => !line.some(lp => lp.id === p.id)).map(p => (
+                        <TouchableOpacity key={p.id} style={styles.rosterPlayer} onPress={() => handleSubSelectIn(p)}>
+                            <Text style={styles.rosterPlayerName}>{getDisplayName(p, false)}</Text>
+                        </TouchableOpacity>
+                    ))
+                )}
+            </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal visible={defensiveModalVisible} transparent animationType="fade">
+        <View style={styles.overlay}>
+            <View style={styles.pullModal}>
+                <Text style={styles.modalHeader}>Defensive Play</Text>
+                {defensivePlayer && (
+                    <Text style={{fontSize: 18, marginBottom: 15, textAlign: 'center'}}>
+                        Action for: {getDisplayName(defensivePlayer, true)}
+                    </Text>
+                )}
+                
+                <TouchableOpacity style={styles.outcomeBtn} onPress={() => {
+                    if (defensivePlayer) saveEvent('d', null, null, defensivePlayer.id);
+                    setDefensiveModalVisible(false);
+                }}>
+                    <Text style={styles.outcomeText}>Block (D)</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.outcomeBtn} onPress={() => {
+                    if (defensivePlayer) {
+                        const run = async () => { await saveEvent('interception', null, null, defensivePlayer.id); };
+                        run();
+                    }
+                    setDefensiveModalVisible(false);
+                }}>
+                    <Text style={styles.outcomeText}>Interception</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={[styles.outcomeBtn, {backgroundColor: '#e67e22'}]} onPress={() => {
+                    if (defensivePlayer) {
+                        const run = async () => { await recordCallahan(defensivePlayer.id); };
+                        run();
+                    }
+                    setDefensiveModalVisible(false);
+                }}>
+                    <Text style={styles.outcomeText}>Callahan (Goal)</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={[styles.outcomeBtn, {backgroundColor: '#7f8c8d', marginTop: 10}]} onPress={() => setDefensiveModalVisible(false)}>
+                    <Text style={styles.outcomeText}>Cancel</Text>
+                </TouchableOpacity>
+            </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -757,7 +935,6 @@ const styles = StyleSheet.create({
   linePlayerButton: { backgroundColor: '#f0f0f0', width: '23%', aspectRatio: 1, margin: '1%', borderRadius: 16, justifyContent: 'center', alignItems: 'center', elevation: 3, position: 'relative' },
   linePlayerSelected: { backgroundColor: '#27ae60' }, // Standard selected
   holderButton: { backgroundColor: '#2ecc71', borderWidth: 2, borderColor: '#27ae60' }, // Highlight holder
-  targetButton: { backgroundColor: '#f1c40f', borderWidth: 2, borderColor: '#f39c12' }, // Highlight potential receivers/scorers
   holderText: { color: '#fff' },
   linePlayerName: { fontSize: 14, fontWeight: 'bold', color: '#2c3e50', textAlign: 'center' },
   linePlayerNumber: { fontSize: 12, color: '#7f8c8d', marginTop: 4 },
